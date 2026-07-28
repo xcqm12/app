@@ -99,12 +99,12 @@ load_existing_config() {
     for provider in GITHUB MICROSOFT GITLAB DISCORD GOOGLE BILIBILI QQ; do
         local id_var="${provider}_CLIENT_ID"
         local secret_var="${provider}_CLIENT_SECRET"
-        if [[ -z "${!id_var}" ]] || [[ "${!id_var}" == "none" ]]; then
+        if [[ -z "${!id_var:-}" ]] || [[ "${!id_var:-}" == "none" ]]; then
             local val
             val=$(get_env "${id_var}")
             [[ -n "${val}" ]] && declare "${id_var}=${val}"
         fi
-        if [[ -z "${!secret_var}" ]] || [[ "${!secret_var}" == "none" ]]; then
+        if [[ -z "${!secret_var:-}" ]] || [[ "${!secret_var:-}" == "none" ]]; then
             local val
             val=$(get_env "${secret_var}")
             [[ -n "${val}" ]] && declare "${secret_var}=${val}"
@@ -435,7 +435,7 @@ configure_third_party_interactive() {
     local configured=0
     for svc in GitHub Microsoft GitLab Discord Google Bilibili QQ; do
         local var_name="${svc^^}_CLIENT_ID"
-        local val="${!var_name}"
+        local val="${!var_name:-}"
         if [[ -n "${val}" ]] && [[ "${val}" != "none" ]]; then
             echo "  ${svc}: 已配置"
             configured=$((configured + 1))
