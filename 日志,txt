@@ -1,64 +1,57 @@
-# ============ 修复 1: 确保 vhost 目录被 nginx.conf include ============
-echo "=== 检查 nginx.conf include ==="
-grep -n "vhost" /etc/nginx/nginx.conf 2>/dev/null
-grep -n "vhost" /www/server/nginx/conf/nginx.conf 2>/dev/null
-
-echo ""
-echo "=== 修复: 在实际 nginx.conf 中添加 include ==="
-# 确定实际的 nginx.conf
-if [[ -f "/www/server/nginx/conf/nginx.conf" ]]; then
-    CONF="/www/server/nginx/conf/nginx.conf"
-else
-    CONF="/etc/nginx/nginx.conf"
-fi
-echo "使用配置: $CONF"
-
-# 如果没有 vhost include, 添加
-if ! grep -q "vhost/nginx" "$CONF"; then
-    # 确保在 http { 块内
-    sed -i '/http {/a\    include /www/server/panel/vhost/nginx/*.conf;' "$CONF"
-    echo "已添加 vhost include"
-else
-    echo "vhost include 已存在"
-fi
-
-# ============ 修复 2: 修正 API 路径 (去掉 /api 前缀) ============
-# 问题: location 用 /api/v[0-9]+/ 但实际路径是 /v2/auth/create
-cat > /www/server/panel/vhost/nginx/api.bbsmc.org.cn.conf << 'APICONF'
-# BBSMC API 反代 - 修正版
-# GET 请求 -> api.modrinth.com (展示官方数据)
-# POST/PUT/PATCH/DELETE -> 本地 labrinth (本地上传)
-
-map $request_method $api_upstream {
-    default  "https://api.modrinth.com";
-    POST     "http://127.0.0.1:8000";
-    PUT      "http://127.0.0.1:8000";
-    PATCH    "http://127.0.0.1:8000";
-    DELETE   "http://127.0.0.1:8000";
-echo "SSL 证书: $(ls /www/server/panel/vhost/cert/api.bbsmc.org.cn/ 2>/dev/null && echo '存在' || echo '不存在 - 请在宝塔面板申请')"
-=== 检查 nginx.conf include ===
-12:    include /www/server/panel/vhost/nginx/tcp/*.conf;
-96:include /www/server/panel/vhost/nginx/*.conf;
-
-=== 修复: 在实际 nginx.conf 中添加 include ===
-使用配置: /www/server/nginx/conf/nginx.conf
-vhost include 已存在
-API 配置已更新
-
-=== 测试 nginx ===
-nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
-2026/07/28 05:13:05 [emerg] 952664#952664: no "events" section in configuration
+[INFO]  nginx.conf 路径: /etc/nginx/nginx.conf
+[WARN]  检测到 /www/server/panel/vhost/nginx/0.default.conf, 重命名为 .disabled 避免拦截请求
+[INFO]  写入主站反代配置: bbsmc.org.cn -> 127.0.0.1:3000
+[INFO]  写入 API 反代配置: api.bbsmc.org.cn -> 127.0.0.1:8000
+[INFO]  写入 CDN 反代配置: cdn.bbsmc.org.cn -> /www/wwwroot/bbsmc-data/uploads
+[INFO]  写入默认 server (兜底, 防止默认 404 页)
+[INFO]  检测到 nginx 版本: 1.24.0 (http2_directive=0, deprecated_ssl_ciphers=0)
+[INFO]  nginx 1.24.0 配置已兼容 (无需 http2/SSL 修复)
+[INFO]  检测到全局 mime.types 引用, 清理 vhost 中的重复引用...
+2026/07/28 09:47:50 [emerg] 1262668#1262668: open() "/etc/nginx/fastcgi_params" failed (2: No such file or directory) in /www/server/panel/vhost/nginx/phpfpm_status.conf:11
 nginx: configuration file /etc/nginx/nginx.conf test failed
+[WARN]  Nginx 配置测试失败, 尝试自动修复...
+[WARN]    输出: 2026/07/28 09:47:50 [emerg] 1262668#1262668: open() "/etc/nginx/fastcgi_params" failed (2: No such file or directory) in /www/server/panel/vhost/nginx/phpfpm_status.conf:11
+nginx: configuration file /etc/nginx/nginx.conf test failed
+2026/07/28 09:47:50 [emerg] 1262674#1262674: open() "/etc/nginx/fastcgi_params" failed (2: No such file or directory) in /www/server/panel/vhost/nginx/phpfpm_status.conf:11
+nginx: configuration file /etc/nginx/nginx.conf test failed
+[WARN]  自动修复失败, 请手动运行: nginx -t
+[WARN]    常见问题:
+[WARN]    1. /etc/nginx/conf.d/ 目录是否存在
+[WARN]    2. nginx.conf 中 include 的文件是否都存在
+[WARN]    3. 宝塔 vhost/nginx 是否被 include
+[WARN]    4. 是否有语法错误 (检查上面输出)
+[INFO]  Nginx 运行中 ✓
 
-=== 重载 nginx ===
-2026/07/28 05:13:05 [emerg] 952665#952665: no "events" section in configuration
-Job for nginx.service failed because the control process exited with error code.
-See "systemctl status nginx.service" and "journalctl -xeu nginx.service" for details.
+=====> 配置 SSL 证书 <=====
+[INFO]  检测到已有 SSL 证书: bbsmc.org.cn (/www/server/panel/vhost/cert/bbsmc.org.cn/fullchain.pem)
+[INFO]  检测到已有 SSL 证书: api.bbsmc.org.cn (/www/server/panel/vhost/cert/api.bbsmc.org.cn/fullchain.pem)
+[INFO]  检测到已有 SSL 证书: cdn.bbsmc.org.cn (/www/server/panel/vhost/cert/cdn.bbsmc.org.cn/fullchain.pem)
+[INFO]  检测到 3 个已有 SSL 证书, 直接应用到 Nginx
+[INFO]  检测到 nginx 版本: 1.24.0 (http2_directive=0, deprecated_ssl_ciphers=0)
+[INFO]  为 bbsmc.org.cn 添加 SSL 配置 (证书: /www/server/panel/vhost/cert/bbsmc.org.cn/fullchain.pem)...
+[INFO]  为 api.bbsmc.org.cn 添加 SSL 配置 (证书: /www/server/panel/vhost/cert/api.bbsmc.org.cn/fullchain.pem)...
+[INFO]  为 cdn.bbsmc.org.cn 添加 SSL 配置 (证书: /www/server/panel/vhost/cert/cdn.bbsmc.org.cn/fullchain.pem)...
+[INFO]  已添加 SSL catch-all server
+[INFO]  检测到 nginx 版本: 1.24.0 (http2_directive=0, deprecated_ssl_ciphers=0)
+[INFO]  nginx 1.24.0 配置已兼容 (无需 http2/SSL 修复)
+[INFO]  检测到全局 mime.types 引用, 清理 vhost 中的重复引用...
+[WARN]  SSL 后 Nginx 配置仍有错误, 尝试恢复 .http2bak 备份
+[INFO]  SSL 配置完成 (如证书申请失败, 请手动在宝塔面板申请)
 
-=== 验证所有接口 ===
-1. 后端直接: 200
-2. Nginx HTTP: 404
-3. 注册接口: 404
-
-=== SSL 状态 ===
-SSL 证书: 不存在 - 请在宝塔面板申请
+=====> 配置 Modrinth 官网镜像模式 <=====
+[INFO]  重写 API 反代配置: GET -> 官网, POST -> 本地
+[INFO]  重写主站反代配置: 前端代理到 modrinth.com (完整镜像)
+[INFO]  检测到 nginx 版本: 1.24.0 (http2_directive=0, deprecated_ssl_ciphers=0)
+[WARN]    修复 /www/server/panel/vhost/nginx/test.bbsmc.org.cn.conf: 转换新 http2 语法 -> 旧语法
+[INFO]      将 http2 合并到 listen 443 ssl 行
+[INFO]      /www/server/panel/vhost/nginx/test.bbsmc.org.cn.conf 已转换为旧 http2 语法
+[INFO]  http2/SSL 兼容性修复完成 (nginx 1.24.0, 共修复 1 个文件)
+[INFO]  检测到全局 mime.types 引用, 清理 vhost 中的重复引用...
+2026/07/28 09:47:51 [warn] 1262896#1262896: duplicate MIME type "text/html" in /www/server/panel/vhost/nginx/bbsmc.org.cn.conf:28
+2026/07/28 09:47:51 [emerg] 1262896#1262896: open() "/etc/nginx/fastcgi_params" failed (2: No such file or directory) in /www/server/panel/vhost/nginx/phpfpm_status.conf:11
+nginx: configuration file /etc/nginx/nginx.conf test failed
+[ERROR] Nginx 配置测试失败, 请检查语法
+root@ser237728389631:/www/wwwroot/test# nginx -t
+2026/07/28 11:03:18 [warn] 1354678#1354678: duplicate MIME type "text/html" in /www/server/panel/vhost/nginx/bbsmc.org.cn.conf:28
+2026/07/28 11:03:18 [emerg] 1354678#1354678: open() "/etc/nginx/fastcgi_params" failed (2: No such file or directory) in /www/server/panel/vhost/nginx/phpfpm_status.conf:11
+nginx: configuration file /etc/nginx/nginx.conf test failed
