@@ -1463,6 +1463,31 @@ EOF
     info "Systemd 服务配置完成"
 }
 
+# ---------------------- Nginx 重复 MIME 类型清理 ----------------------
+cleanup_duplicate_mime() {
+    local NGINX_CONF_DIR="${1:-/www/server/panel/vhost/nginx}"
+    local nginx_bin
+    nginx_bin=$(command -v nginx 2>/dev/null || echo "/usr/sbin/nginx")
+
+    # 如果全局 nginx.conf 已包含 mime.types, 则从 vhost 中移除重复的 include
+    local nginx_main
+    nginx_main=$("${nginx_bin}" -V 2>&1 | grep -oP '\-\-conf-path=\K[^ ]+' 2>/dev/null || echo "/etc/nginx/nginx.conf")
+
+    if [[ -f "${nginx_main}" ]] && grep -q "mime.types" "${nginx_main}" 2>/dev/null; then
+        info "检测到全局 mime.types 引用, 清理 vhost 中的重复引用..."
+        if [[ -d "${NGINX_CONF_DIR}" ]]; then
+            for conf in "${NGINX_CONF_DIR}"/*.conf; do
+                [[ -f "${conf}" ]] || continue
+                if grep -q "mime.types" "${conf}" 2>/dev/null; then
+                    warn "  清理 ${conf} 中的重复 mime.types 引用"
+                    sed -i '/include.*mime\.types/d' "${conf}" 2>/dev/null || true
+                fi
+            done
+        fi
+    fi
+    return 0
+}
+
 # ---------------------- Nginx HTTP/2 兼容性修复 ----------------------
 fix_nginx_http2_compat() {
     local nginx_bin
@@ -1498,39 +1523,40 @@ fix_nginx_http2_compat() {
 
     warn "nginx ${nginx_version} 不支持 http2 on; 指令, 自动移除/替换以兼容"
 
+    local total_fixed=0
+
     # 扫描 vhost 配置目录, 修复 http2 指令
     if [[ -d "${NGINX_CONF_DIR}" ]]; then
         for conf in "${NGINX_CONF_DIR}"/*.conf; do
             [[ -f "${conf}" ]] || continue
 
-            # 备份 (每次都更新, 确保最新)
-            /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
+            # 检查是否包含独立的 http2 指令 (http2 on; http2 off; http2; http2 443; 等)
+            if grep -qE '^\s*http2\s+[a-zA-Z0-9]+\s*;' "${conf}" 2>/dev/null || \
+               grep -qE '^\s*http2\s*;' "${conf}" 2>/dev/null; then
+                warn "  修复 ${conf}"
 
-            local modified=0
+                # 备份
+                /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
 
-            # 如果存在 http2 on; 指令, 尝试将 http2 合并到 listen 443 行
-            if grep -q 'http2[[:space:]]*on' "${conf}" 2>/dev/null; then
-                warn "  修复 ${conf}: http2 on; 指令"
-                # 尝试将 listen 443 ssl; 改为 listen 443 ssl http2; (仅当 listen 行未包含 http2)
-                if grep -qE 'listen[[:space:]]+443.*ssl' "${conf}" 2>/dev/null && ! grep -qE 'listen[[:space:]]+443.*http2' "${conf}" 2>/dev/null; then
+                # 1. 尝试将 http2 合并到 listen 443 行 (仅当 listen 行包含 ssl 但未包含 http2)
+                if grep -qE 'listen[[:space:]]+443.*ssl' "${conf}" 2>/dev/null && \
+                   ! grep -qE 'listen[[:space:]]+443.*http2' "${conf}" 2>/dev/null; then
                     sed -i 's/\(listen[[:space:]]\+443[[:space:]]\+ssl\);/\1 http2;/g' "${conf}" 2>/dev/null || true
-                    info "    将 http2 合并到 listen 443 行"
+                    info "    将 http2 合并到 listen 443 ssl 行"
                 fi
-                # 移除独立的 http2 on; / http2 off; 指令行
-                sed -i '/http2[[:space:]]*on/d; /http2[[:space:]]*off/d' "${conf}" 2>/dev/null || true
-                modified=1
-            fi
 
-            # 移除 http2 443; 指令 (旧版 nginx 也不支持)
-            if grep -q 'http2[[:space:]]*443' "${conf}" 2>/dev/null; then
-                warn "  修复 ${conf}: 移除 http2 443; 指令"
-                sed -i '/http2[[:space:]]*443/d' "${conf}" 2>/dev/null || true
-                modified=1
-            fi
+                # 2. 移除所有独立 http2 指令行 (http2 on; / http2 off; / http2 443; / http2;)
+                sed -i '/^[[:space:]]*http2[[:space:]]*on[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                sed -i '/^[[:space:]]*http2[[:space:]]*off[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                sed -i '/^[[:space:]]*http2[[:space:]]*443[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                # 移除无参数的 http2; 指令
+                sed -i '/^[[:space:]]*http2[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                # 移除其他 http2 参数变体 (http2 http3; 等)
+                sed -i '/^[[:space:]]*http2[[:space:]]\+[a-zA-Z][a-zA-Z0-9_]*[[:space:]]*;/d' "${conf}" 2>/dev/null || true
 
-            # 如果 listen 行已经有 http2 (被宝塔新版本写入), 确保不被误删
-            # 某些宝塔版本可能将 http2 写在 listen 行中, 这是兼容的
-            [[ ${modified} -eq 1 ]] && info "  ${conf} 已修复"
+                info "    ${conf} 已修复"
+                total_fixed=$((total_fixed + 1))
+            fi
         done
     fi
 
@@ -1541,19 +1567,25 @@ fix_nginx_http2_compat() {
     if [[ -d "${conf_d}" ]]; then
         for conf in "${conf_d}"/*.conf; do
             [[ -f "${conf}" ]] || continue
-            if grep -q 'http2[[:space:]]*on\|http2[[:space:]]*off' "${conf}" 2>/dev/null; then
-                warn "  修复 ${conf}: 移除 http2 指令"
+            if grep -qE '^\s*http2\s+[a-zA-Z0-9]+\s*;' "${conf}" 2>/dev/null || \
+               grep -qE '^\s*http2\s*;' "${conf}" 2>/dev/null; then
+                warn "  修复 ${conf}"
                 /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
-                # 尝试将 http2 合并到 listen 443 (仅当未包含 http2 时)
-                if grep -qE 'listen[[:space:]]+443.*ssl' "${conf}" 2>/dev/null && ! grep -qE 'listen[[:space:]]+443.*http2' "${conf}" 2>/dev/null; then
-                    sed -i 's/\(listen[[:space:]]\+443[[:space:]]\+ssl\);/\1 http2;/g' "${conf}" 2>/dev/null || true
-                fi
-                sed -i '/http2[[:space:]]*on/d; /http2[[:space:]]*off/d' "${conf}" 2>/dev/null || true
+                sed -i '/^[[:space:]]*http2[[:space:]]*on[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                sed -i '/^[[:space:]]*http2[[:space:]]*off[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                sed -i '/^[[:space:]]*http2[[:space:]]*443[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                sed -i '/^[[:space:]]*http2[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                sed -i '/^[[:space:]]*http2[[:space:]]\+[a-zA-Z][a-zA-Z0-9_]*[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                total_fixed=$((total_fixed + 1))
             fi
         done
     fi
 
-    info "http2 兼容性修复完成"
+    if [[ ${total_fixed} -gt 0 ]]; then
+        info "http2 兼容性修复完成 (共修复 ${total_fixed} 个文件)"
+    else
+        info "无需 http2 兼容性修复"
+    fi
     return 0
 }
 
@@ -1815,6 +1847,7 @@ EOFCONF
 
     # 修复 http2 指令兼容性 (宝塔默认 nginx < 1.25.1)
     fix_nginx_http2_compat "${NGINX_CONF_DIR}"
+    cleanup_duplicate_mime "${NGINX_CONF_DIR}"
 
     # 测试配置
     local nginx_test_output
@@ -1935,13 +1968,12 @@ PYEOF
         local conf_path="/www/server/panel/vhost/nginx/${domain}.conf"
 
         if [[ -f "${cert_path}" && -f "${key_path}" && -f "${conf_path}" ]]; then
-            # 检查配置是否已包含 SSL
-            if ! grep -q "listen 443" "${conf_path}"; then
+            # 检查配置是否已包含 SSL (宝塔 acme_v2 可能已添加)
+            if ! grep -q "listen 443" "${conf_path}" 2>/dev/null; then
                 info "为 ${domain} 添加 SSL 配置..."
-                # 在 listen 80 后插入 SSL 监听
+                # 在 listen 80 后插入 SSL 监听 (使用 nginx < 1.25 兼容语法)
                 sed -i "/listen 80;/a\\
-    listen 443 ssl http2;" "${conf_path}"
-                sed -i "/listen 443 ssl http2;/a\\
+    listen 443 ssl http2;\\
     ssl_certificate    ${cert_path};\\
     ssl_certificate_key ${key_path};\\
     ssl_protocols TLSv1.2 TLSv1.3;\\
@@ -1949,11 +1981,25 @@ PYEOF
     ssl_prefer_server_ciphers on;\\
     ssl_session_cache shared:SSL:10m;\\
     ssl_session_timeout 10m;" "${conf_path}"
+            else
+                info "${domain} 已包含 SSL 配置, 跳过手动添加"
             fi
         fi
     done
 
     nginx -t 2>/dev/null && nginx -s reload 2>/dev/null
+    # SSL 配置完成后立即修复 http2 兼容性 (宝塔 acme_v2 可能写入 http2 指令)
+    fix_nginx_http2_compat "/www/server/panel/vhost/nginx"
+    cleanup_duplicate_mime "/www/server/panel/vhost/nginx"
+    # 测试修复后的配置
+    if ! nginx -t 2>/dev/null; then
+        warn "SSL 后 Nginx 配置仍有错误, 尝试恢复 .http2bak 备份"
+        for conf in /www/server/panel/vhost/nginx/*.conf.http2bak; do
+            [[ -f "${conf}" ]] || continue
+            local orig="${conf%.http2bak}"
+            /bin/cp -f "${conf}" "${orig}" 2>/dev/null || true
+        done
+    fi
     info "SSL 配置完成 (如证书申请失败, 请手动在宝塔面板申请)"
 }
 
@@ -2121,6 +2167,7 @@ EOFCONF
 
     # 修复 http2 指令兼容性 (宝塔默认 nginx < 1.25.1)
     fix_nginx_http2_compat "/www/server/panel/vhost/nginx"
+    cleanup_duplicate_mime "/www/server/panel/vhost/nginx"
 
     # 测试并重载
     local nginx_test_output
@@ -2887,6 +2934,7 @@ EOFCONF
     # 5. 测试并启动 Nginx
     info "测试 Nginx 配置..."
     fix_nginx_http2_compat "${NGINX_CONF_DIR}"
+    cleanup_duplicate_mime "${NGINX_CONF_DIR}"
     local test_output
     test_output=$("${nginx_bin}" -t 2>&1) || true
     echo "${test_output}"
