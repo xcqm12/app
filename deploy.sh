@@ -1488,103 +1488,141 @@ cleanup_duplicate_mime() {
     return 0
 }
 
-# ---------------------- Nginx HTTP/2 兼容性修复 ----------------------
-fix_nginx_http2_compat() {
+# ---------------------- Nginx 版本检测 ----------------------
+# 设置全局变量 NGINX_VERSION, NGINX_MAJOR, NGINX_MINOR, NGINX_PATCH
+# 以及 NGINX_SUPPORTS_HTTP2_DIRECTIVE, NGINX_DEPRECATED_SSL_CIPHERS
+detect_nginx_version() {
     local nginx_bin
     nginx_bin=$(command -v nginx 2>/dev/null || echo "/usr/sbin/nginx")
-    local NGINX_CONF_DIR="${1:-/www/server/panel/vhost/nginx}"
 
-    local nginx_version
-    nginx_version=$("${nginx_bin}" -v 2>&1 | grep -oP 'nginx/\K[0-9]+\.[0-9]+\.[0-9]+' 2>/dev/null || echo "0.0.0")
-    local major minor
-    major=$(echo "${nginx_version}" | cut -d. -f1)
-    minor=$(echo "${nginx_version}" | cut -d. -f2)
+    NGINX_VERSION=$("${nginx_bin}" -v 2>&1 | grep -oP 'nginx/\K[0-9]+\.[0-9]+\.[0-9]+' 2>/dev/null || echo "0.0.0")
+    NGINX_MAJOR=$(echo "${NGINX_VERSION}" | cut -d. -f1)
+    NGINX_MINOR=$(echo "${NGINX_VERSION}" | cut -d. -f2)
+    NGINX_PATCH=$("${nginx_bin}" -v 2>&1 | grep -oP '\-\-patch=\K[0-9]+' 2>/dev/null || echo "0")
 
-    if [[ -z "${major}" ]] || [[ -z "${minor}" ]] || [[ "${major}" == "0" ]]; then
-        warn "无法检测 nginx 版本 (${nginx_version}), 默认不处理 http2 兼容"
-        return 0
-    fi
-
-    # nginx >= 1.25.1 支持 http2 on; 指令
-    # nginx < 1.25.1 需要使用 listen 443 ssl http2; 旧式语法
-    local supports_http2_directive=0
-    if [[ ${major} -gt 1 ]] || [[ ${major} -eq 1 && ${minor} -ge 25 ]]; then
-        local patch
-        patch=$("${nginx_bin}" -v 2>&1 | grep -oP '\-\-patch=\K[0-9]+' 2>/dev/null || echo "0")
-        if [[ ${minor} -ge 25 && ${patch} -ge 1 ]] || [[ ${major} -gt 1 ]] || [[ ${minor} -gt 25 ]]; then
-            supports_http2_directive=1
+    NGINX_SUPPORTS_HTTP2_DIRECTIVE=0
+    if [[ -n "${NGINX_MAJOR}" && "${NGINX_MAJOR}" != "0" ]]; then
+        if [[ ${NGINX_MAJOR} -gt 1 ]] || [[ ${NGINX_MAJOR} -eq 1 && ${NGINX_MINOR} -ge 25 ]]; then
+            if [[ ${NGINX_MINOR} -ge 25 && ${NGINX_PATCH} -ge 1 ]] || [[ ${NGINX_MAJOR} -gt 1 ]] || [[ ${NGINX_MINOR} -gt 25 ]]; then
+                NGINX_SUPPORTS_HTTP2_DIRECTIVE=1
+            fi
         fi
     fi
 
-    if [[ ${supports_http2_directive} -eq 1 ]]; then
-        info "nginx ${nginx_version} 支持 http2 on; 指令, 无需兼容处理"
+    NGINX_DEPRECATED_SSL_CIPHERS=0
+    if [[ ${NGINX_MAJOR} -ge 2 ]] || [[ ${NGINX_MAJOR} -eq 1 && ${NGINX_MINOR} -ge 30 ]]; then
+        NGINX_DEPRECATED_SSL_CIPHERS=1
+    fi
+
+    if [[ "${NGINX_VERSION}" != "0.0.0" ]]; then
+        info "检测到 nginx 版本: ${NGINX_VERSION} (http2_directive=${NGINX_SUPPORTS_HTTP2_DIRECTIVE}, deprecated_ssl_ciphers=${NGINX_DEPRECATED_SSL_CIPHERS})"
+    fi
+}
+
+# ---------------------- Nginx SSL/HTTP2 版本适配 ----------------------
+fix_nginx_http2_compat() {
+    local NGINX_CONF_DIR="${1:-/www/server/panel/vhost/nginx}"
+
+    # 使用共享的版本检测
+    detect_nginx_version
+
+    if [[ -z "${NGINX_MAJOR}" ]] || [[ "${NGINX_MAJOR}" == "0" ]]; then
+        warn "无法检测 nginx 版本, 默认不处理 http2 兼容"
         return 0
     fi
 
-    warn "nginx ${nginx_version} 不支持 http2 on; 指令, 自动移除/替换以兼容"
-
     local total_fixed=0
+    local conf_dirs=("${NGINX_CONF_DIR}")
 
-    # 扫描 vhost 配置目录, 修复 http2 指令
-    if [[ -d "${NGINX_CONF_DIR}" ]]; then
-        for conf in "${NGINX_CONF_DIR}"/*.conf; do
-            [[ -f "${conf}" ]] || continue
-
-            # 检查是否包含独立的 http2 指令 (http2 on; http2 off; http2; http2 443; 等)
-            if grep -qE '^\s*http2\s+[a-zA-Z0-9]+\s*;' "${conf}" 2>/dev/null || \
-               grep -qE '^\s*http2\s*;' "${conf}" 2>/dev/null; then
-                warn "  修复 ${conf}"
-
-                # 备份
-                /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
-
-                # 1. 尝试将 http2 合并到 listen 443 行 (仅当 listen 行包含 ssl 但未包含 http2)
-                if grep -qE 'listen[[:space:]]+443.*ssl' "${conf}" 2>/dev/null && \
-                   ! grep -qE 'listen[[:space:]]+443.*http2' "${conf}" 2>/dev/null; then
-                    sed -i 's/\(listen[[:space:]]\+443[[:space:]]\+ssl\);/\1 http2;/g' "${conf}" 2>/dev/null || true
-                    info "    将 http2 合并到 listen 443 ssl 行"
-                fi
-
-                # 2. 移除所有独立 http2 指令行 (http2 on; / http2 off; / http2 443; / http2;)
-                sed -i '/^[[:space:]]*http2[[:space:]]*on[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                sed -i '/^[[:space:]]*http2[[:space:]]*off[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                sed -i '/^[[:space:]]*http2[[:space:]]*443[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                # 移除无参数的 http2; 指令
-                sed -i '/^[[:space:]]*http2[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                # 移除其他 http2 参数变体 (http2 http3; 等)
-                sed -i '/^[[:space:]]*http2[[:space:]]\+[a-zA-Z][a-zA-Z0-9_]*[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-
-                info "    ${conf} 已修复"
-                total_fixed=$((total_fixed + 1))
-            fi
-        done
-    fi
-
-    # 同样修复 conf.d 目录
+    # 也处理 conf.d 目录
+    local nginx_bin
+    nginx_bin=$(command -v nginx 2>/dev/null || echo "/usr/sbin/nginx")
     local nginx_conf_base
     nginx_conf_base=$(/usr/bin/dirname "$("${nginx_bin}" -V 2>&1 | grep -oP '\-\-conf-path=\K[^ ]+' 2>/dev/null || echo "/etc/nginx/nginx.conf")")
     local conf_d="${nginx_conf_base}/conf.d"
-    if [[ -d "${conf_d}" ]]; then
-        for conf in "${conf_d}"/*.conf; do
+    [[ -d "${conf_d}" ]] && conf_dirs+=("${conf_d}")
+
+    for dir in "${conf_dirs[@]}"; do
+        [[ -d "${dir}" ]] || continue
+        for conf in "${dir}"/*.conf; do
             [[ -f "${conf}" ]] || continue
-            if grep -qE '^\s*http2\s+[a-zA-Z0-9]+\s*;' "${conf}" 2>/dev/null || \
-               grep -qE '^\s*http2\s*;' "${conf}" 2>/dev/null; then
-                warn "  修复 ${conf}"
-                /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
-                sed -i '/^[[:space:]]*http2[[:space:]]*on[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                sed -i '/^[[:space:]]*http2[[:space:]]*off[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                sed -i '/^[[:space:]]*http2[[:space:]]*443[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                sed -i '/^[[:space:]]*http2[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                sed -i '/^[[:space:]]*http2[[:space:]]\+[a-zA-Z][a-zA-Z0-9_]*[[:space:]]*;/d' "${conf}" 2>/dev/null || true
-                total_fixed=$((total_fixed + 1))
+
+            local needs_fix=0
+
+            if [[ ${NGINX_SUPPORTS_HTTP2_DIRECTIVE} -eq 1 ]]; then
+                # === 新 nginx (>= 1.25.1): 旧语法 → 新语法 ===
+                # 将 listen 443 ssl http2; 转换为 listen 443 ssl; + http2 on;
+                if grep -qE 'listen[[:space:]]+443.*http2' "${conf}" 2>/dev/null; then
+                    needs_fix=1
+                    warn "  修复 ${conf}: 转换旧 http2 语法 -> 新语法"
+                    /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
+
+                    # 将 listen 443 ssl http2; 改为 listen 443 ssl; (移除 http2 参数)
+                    sed -i 's/\(listen[[:space:]]\+443.*ssl\)[[:space:]]\+http2\(.*\);/\1\2;/g' "${conf}" 2>/dev/null || true
+
+                    # 在第一个 server 块的 } 前添加 http2 on; (如果尚未存在)
+                    if ! grep -qE '^\s*http2\s+on\s*;' "${conf}" 2>/dev/null; then
+                        # 在 ssl_session_timeout 行后添加 http2 on; (更可靠的位置)
+                        if grep -q "ssl_session_timeout" "${conf}" 2>/dev/null; then
+                            sed -i '/ssl_session_timeout/a\    http2 on;' "${conf}" 2>/dev/null || true
+                        elif grep -q "ssl_certificate_key" "${conf}" 2>/dev/null; then
+                            sed -i '/ssl_certificate_key/a\    http2 on;' "${conf}" 2>/dev/null || true
+                        else
+                            # 在 listen 443 行后添加
+                            sed -i '/listen[[:space:]]\+443.*ssl/a\    http2 on;' "${conf}" 2>/dev/null || true
+                        fi
+                    fi
+                    info "    ${conf} 已转换为新 http2 语法"
+                fi
+
+                # 移除 ssl_prefer_server_ciphers (nginx >= 1.30 弃用)
+                if [[ ${NGINX_DEPRECATED_SSL_CIPHERS} -eq 1 ]] && grep -q "ssl_prefer_server_ciphers" "${conf}" 2>/dev/null; then
+                    needs_fix=1
+                    warn "  修复 ${conf}: 移除已弃用的 ssl_prefer_server_ciphers"
+                    sed -i '/ssl_prefer_server_ciphers/d' "${conf}" 2>/dev/null || true
+                fi
+
+                # 移除 ssl_ciphers (nginx >= 1.30 推荐使用 Mozilla 预设或直接移除)
+                # 注意: ssl_ciphers 本身未被弃用, 但我们的硬编码值可能不再推荐
+            else
+                # === 旧 nginx (< 1.25.1): 新语法 → 旧语法 ===
+                # 将 http2 on; / http2 off; 转换到 listen 行
+                if grep -qE '^\s*http2\s+on\s*;' "${conf}" 2>/dev/null || \
+                   grep -qE '^\s*http2\s+off\s*;' "${conf}" 2>/dev/null || \
+                   grep -qE '^\s*http2\s*;' "${conf}" 2>/dev/null || \
+                   grep -qE '^\s*http2\s+[a-zA-Z0-9]+\s*;' "${conf}" 2>/dev/null; then
+                    needs_fix=1
+                    warn "  修复 ${conf}: 转换新 http2 语法 -> 旧语法"
+                    /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
+
+                    # 如果存在 http2 on;, 将 http2 合并到 listen 443 行
+                    if grep -qE '^\s*http2\s+on\s*;' "${conf}" 2>/dev/null; then
+                        if grep -qE 'listen[[:space:]]+443.*ssl' "${conf}" 2>/dev/null && \
+                           ! grep -qE 'listen[[:space:]]+443.*http2' "${conf}" 2>/dev/null; then
+                            sed -i 's/\(listen[[:space:]]\+443[[:space:]]\+ssl\);/\1 http2;/g' "${conf}" 2>/dev/null || true
+                            info "    将 http2 合并到 listen 443 ssl 行"
+                        fi
+                    fi
+
+                    # 移除所有独立 http2 指令行
+                    sed -i '/^[[:space:]]*http2[[:space:]]*on[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                    sed -i '/^[[:space:]]*http2[[:space:]]*off[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                    sed -i '/^[[:space:]]*http2[[:space:]]*443[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                    sed -i '/^[[:space:]]*http2[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                    sed -i '/^[[:space:]]*http2[[:space:]]\+[a-zA-Z][a-zA-Z0-9_]*[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+
+                    info "    ${conf} 已转换为旧 http2 语法"
+                fi
             fi
+
+            [[ ${needs_fix} -eq 1 ]] && total_fixed=$((total_fixed + 1))
         done
-    fi
+    done
 
     if [[ ${total_fixed} -gt 0 ]]; then
-        info "http2 兼容性修复完成 (共修复 ${total_fixed} 个文件)"
+        info "http2/SSL 兼容性修复完成 (nginx ${nginx_version}, 共修复 ${total_fixed} 个文件)"
     else
-        info "无需 http2 兼容性修复"
+        info "nginx ${nginx_version} 配置已兼容 (无需 http2/SSL 修复)"
     fi
     return 0
 }
@@ -1962,6 +2000,19 @@ PYEOF
     apply_ssl "${CDN_DOMAIN}"
 
     # 如果证书申请成功, 自动更新 Nginx 配置添加 SSL 监听
+    # 检测 nginx 版本以生成兼容的 SSL 配置
+    detect_nginx_version
+
+    local use_new_http2=${NGINX_SUPPORTS_HTTP2_DIRECTIVE}
+    local skip_prefer_ciphers=${NGINX_DEPRECATED_SSL_CIPHERS}
+
+    if [[ ${use_new_http2} -eq 1 ]]; then
+        info "使用新 http2 语法 (http2 on;) 生成 SSL 配置"
+    fi
+    if [[ ${skip_prefer_ciphers} -eq 1 ]]; then
+        info "跳过已弃用的 ssl_prefer_server_ciphers"
+    fi
+
     for domain in "${DOMAIN}" "${API_DOMAIN}" "${CDN_DOMAIN}"; do
         local cert_path="/www/server/panel/vhost/cert/${domain}/fullchain.pem"
         local key_path="/www/server/panel/vhost/cert/${domain}/privkey.pem"
@@ -1971,8 +2022,44 @@ PYEOF
             # 检查配置是否已包含 SSL (宝塔 acme_v2 可能已添加)
             if ! grep -q "listen 443" "${conf_path}" 2>/dev/null; then
                 info "为 ${domain} 添加 SSL 配置..."
-                # 在 listen 80 后插入 SSL 监听 (使用 nginx < 1.25 兼容语法)
-                sed -i "/listen 80;/a\\
+
+                if [[ ${use_new_http2} -eq 1 ]]; then
+                    # 新语法: listen 443 ssl; + http2 on;
+                    if [[ ${skip_prefer_ciphers} -eq 1 ]]; then
+                        sed -i "/listen 80;/a\\
+    listen 443 ssl;\\
+    ssl_certificate    ${cert_path};\\
+    ssl_certificate_key ${key_path};\\
+    ssl_protocols TLSv1.2 TLSv1.3;\\
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:HIGH:!aNULL:!MD5:!RC4:!DHE;\\
+    ssl_session_cache shared:SSL:10m;\\
+    ssl_session_timeout 10m;\\
+    http2 on;" "${conf_path}"
+                    else
+                        sed -i "/listen 80;/a\\
+    listen 443 ssl;\\
+    ssl_certificate    ${cert_path};\\
+    ssl_certificate_key ${key_path};\\
+    ssl_protocols TLSv1.2 TLSv1.3;\\
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:HIGH:!aNULL:!MD5:!RC4:!DHE;\\
+    ssl_prefer_server_ciphers on;\\
+    ssl_session_cache shared:SSL:10m;\\
+    ssl_session_timeout 10m;\\
+    http2 on;" "${conf_path}"
+                    fi
+                else
+                    # 旧语法: listen 443 ssl http2;
+                    if [[ ${skip_prefer_ciphers} -eq 1 ]]; then
+                        sed -i "/listen 80;/a\\
+    listen 443 ssl http2;\\
+    ssl_certificate    ${cert_path};\\
+    ssl_certificate_key ${key_path};\\
+    ssl_protocols TLSv1.2 TLSv1.3;\\
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:HIGH:!aNULL:!MD5:!RC4:!DHE;\\
+    ssl_session_cache shared:SSL:10m;\\
+    ssl_session_timeout 10m;" "${conf_path}"
+                    else
+                        sed -i "/listen 80;/a\\
     listen 443 ssl http2;\\
     ssl_certificate    ${cert_path};\\
     ssl_certificate_key ${key_path};\\
@@ -1981,6 +2068,8 @@ PYEOF
     ssl_prefer_server_ciphers on;\\
     ssl_session_cache shared:SSL:10m;\\
     ssl_session_timeout 10m;" "${conf_path}"
+                    fi
+                fi
             else
                 info "${domain} 已包含 SSL 配置, 跳过手动添加"
             fi
