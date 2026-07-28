@@ -4,7 +4,7 @@
 # 项目: https://github.com/xcqm12/app
 # 组件: Labrinth(Rust API) + Nuxt3 前端 + PostgreSQL/Redis/Meilisearch/ClickHouse
 # ============================================================================
-set -euo pipefail
+set -eo pipefail
 
 # ---------------------- 颜色输出 ----------------------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
