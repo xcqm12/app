@@ -2763,6 +2763,8 @@ server {
 
     # ====== 本地路由: 用户/认证/上传相关 (所有方法都走本地) ======
     location ~ ^/v[0-9]+/(auth|user|session|pat|oauth|notifications|report|thread|billing|payout|collections) {
+        # API 兼容性重写: 前端可能请求 /v2/auth/register, 后端实际路由为 /v2/auth/create_account_with_password
+        rewrite ^/v[0-9]+/auth/register$ /v2/auth/create_account_with_password break;
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
         proxy_set_header Host ${API_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
