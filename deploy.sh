@@ -1976,22 +1976,46 @@ EOFCONF
 
 # ---------------------- 申请 SSL 证书 ----------------------
 setup_ssl() {
-    step "申请 SSL 证书 (Let's Encrypt)"
+    step "配置 SSL 证书"
 
     local BT_CLI="/etc/init.d/bt"
     local BT_PYTHON="/www/server/panel/pyenv/bin/python3"
 
-    if [[ ! -x "${BT_PYTHON}" ]]; then
-        warn "未找到宝塔 Python, 跳过自动 SSL 申请"
-        warn "请手动在宝塔面板 -> 网站 -> SSL 中申请 Let's Encrypt 证书"
-        return
-    fi
+    # 先尝试检测宝塔已有的证书
+    local BT_CERT_BASE="/www/server/panel/vhost/cert"
+    local certs_found=0
+    for domain in "${DOMAIN}" "${API_DOMAIN}" "${CDN_DOMAIN}"; do
+        local cert_dir="${BT_CERT_BASE}/${domain}"
+        if [[ -d "${cert_dir}" ]]; then
+            local cert_file=""
+            local key_file=""
+            # 宝塔常见的证书文件名
+            for pattern in "fullchain.pem" "${domain}_bundle.crt" "${domain}.crt"; do
+                [[ -f "${cert_dir}/${pattern}" ]] && cert_file="${cert_dir}/${pattern}" && break
+            done
+            for pattern in "privkey.pem" "${domain}.key" "${domain}.pem"; do
+                [[ -f "${cert_dir}/${pattern}" ]] && key_file="${cert_dir}/${pattern}" && break
+            done
+            if [[ -n "${cert_file}" && -n "${key_file}" ]]; then
+                info "检测到已有 SSL 证书: ${domain} (${cert_file})"
+                certs_found=$((certs_found + 1))
+            fi
+        fi
+    done
 
-    # 通过宝塔 acme_v2 申请证书
-    apply_ssl() {
-        local site_domain="$1"
-        info "为 ${site_domain} 申请 SSL 证书..."
-        ${BT_PYTHON} /www/server/panel/BT-Panel <<PYEOF
+    # 如果没有检测到现有证书, 尝试申请
+    if [[ ${certs_found} -eq 0 ]]; then
+        warn "未检测到 SSL 证书, 尝试通过宝塔申请..."
+        if [[ ! -x "${BT_PYTHON}" ]]; then
+            warn "未找到宝塔 Python, 跳过自动 SSL 申请"
+            warn "请手动在宝塔面板 -> 网站 -> SSL 中申请 Let's Encrypt 证书"
+            return
+        fi
+
+        apply_ssl() {
+            local site_domain="$1"
+            info "为 ${site_domain} 申请 SSL 证书..."
+            ${BT_PYTHON} /www/server/panel/BT-Panel <<PYEOF
 import sys
 sys.path.insert(0, '/www/server/panel')
 sys.path.insert(0, '/www/server/panel/class')
@@ -2009,14 +2033,16 @@ try:
 except Exception as e:
     print('SSL_FAIL: ${site_domain} -', e)
 PYEOF
-    }
+        }
 
-    apply_ssl "${DOMAIN}"
-    apply_ssl "${API_DOMAIN}"
-    apply_ssl "${CDN_DOMAIN}"
+        apply_ssl "${DOMAIN}"
+        apply_ssl "${API_DOMAIN}"
+        apply_ssl "${CDN_DOMAIN}"
+    else
+        info "检测到 ${certs_found} 个已有 SSL 证书, 直接应用到 Nginx"
+    fi
 
-    # 如果证书申请成功, 自动更新 Nginx 配置添加 SSL 监听
-    # 检测 nginx 版本以生成兼容的 SSL 配置
+    # 自动更新 Nginx 配置添加 SSL 监听
     detect_nginx_version
 
     local use_new_http2=${NGINX_SUPPORTS_HTTP2_DIRECTIVE}
@@ -2030,14 +2056,44 @@ PYEOF
     fi
 
     for domain in "${DOMAIN}" "${API_DOMAIN}" "${CDN_DOMAIN}"; do
-        local cert_path="/www/server/panel/vhost/cert/${domain}/fullchain.pem"
-        local key_path="/www/server/panel/vhost/cert/${domain}/privkey.pem"
+        local cert_dir="${BT_CERT_BASE}/${domain}"
+        local cert_path=""
+        local key_path=""
+
+        # 查找证书文件 (支持多种命名格式)
+        for pattern in "fullchain.pem" "${domain}_bundle.crt" "${domain}.crt"; do
+            [[ -f "${cert_dir}/${pattern}" ]] && cert_path="${cert_dir}/${pattern}" && break
+        done
+        for pattern in "privkey.pem" "${domain}.key" "${domain}.pem"; do
+            [[ -f "${cert_dir}/${pattern}" ]] && key_path="${cert_dir}/${pattern}" && break
+        done
+
+        # 如果上面没找到, 尝试遍历目录
+        if [[ -z "${cert_path}" && -d "${cert_dir}" ]]; then
+            cert_path=$(find "${cert_dir}" -name "*.pem" -o -name "*bundle*" -o -name "*.crt" 2>/dev/null | head -1)
+            # 尝试用 openssl 验证
+            if [[ -n "${cert_path}" ]] && openssl x509 -in "${cert_path}" -noout -subject 2>/dev/null; then
+                info "找到证书: ${cert_path}"
+            else
+                cert_path=""
+            fi
+        fi
+
+        if [[ -z "${key_path}" && -d "${cert_dir}" ]]; then
+            key_path=$(find "${cert_dir}" -name "privkey*" -o -name "*.key" -o -name "*.pem" 2>/dev/null | head -1)
+            if [[ -n "${key_path}" ]] && openssl rsa -in "${key_path}" -check -noout 2>/dev/null; then
+                info "找到私钥: ${key_path}"
+            else
+                key_path=""
+            fi
+        fi
+
         local conf_path="/www/server/panel/vhost/nginx/${domain}.conf"
 
-        if [[ -f "${cert_path}" && -f "${key_path}" && -f "${conf_path}" ]]; then
+        if [[ -n "${cert_path}" && -n "${key_path}" && -f "${conf_path}" ]]; then
             # 检查配置是否已包含 SSL (宝塔 acme_v2 可能已添加)
             if ! grep -q "listen 443" "${conf_path}" 2>/dev/null; then
-                info "为 ${domain} 添加 SSL 配置..."
+                info "为 ${domain} 添加 SSL 配置 (证书: ${cert_path})..."
 
                 if [[ ${use_new_http2} -eq 1 ]]; then
                     # 新语法: listen 443 ssl; + http2 on;
@@ -2094,9 +2150,15 @@ PYEOF
 
     # 添加 SSL catch-all server (防止 HTTPS 请求显示证书错误)
     local catch_all_ssl="/www/server/panel/vhost/nginx/_catch_all_ssl.conf"
-    local ssl_cert_path="/www/server/panel/vhost/cert/${DOMAIN}/fullchain.pem"
-    local ssl_key_path="/www/server/panel/vhost/cert/${DOMAIN}/privkey.pem"
-    if [[ -f "${ssl_cert_path}" && -f "${ssl_key_path}" ]]; then
+    local ssl_cert_path=""
+    local ssl_key_path=""
+    local main_cert_dir="${BT_CERT_BASE}/${DOMAIN}"
+    for pattern in "fullchain.pem" "${DOMAIN}_bundle.crt" "${DOMAIN}.crt"; do
+        [[ -f "${main_cert_dir}/${pattern}" ]] && ssl_cert_path="${main_cert_dir}/${pattern}" && break
+    done
+    [[ -f "${main_cert_dir}/privkey.pem" ]] && ssl_key_path="${main_cert_dir}/privkey.pem"
+    [[ -f "${main_cert_dir}/${DOMAIN}.key" ]] && ssl_key_path="${main_cert_dir}/${DOMAIN}.key"
+    if [[ -n "${ssl_cert_path}" && -n "${ssl_key_path}" ]]; then
         cat > "${catch_all_ssl}" <<EOFCONF
 server {
     listen 443 ssl default_server;
@@ -2675,8 +2737,15 @@ print_summary() {
     echo -e "  2. .env 配置错误, 检查 ${INSTALL_DIR}/apps/labrinth/.env"
     echo ""
     echo -e "  ${RED}# SSL 证书未配置/显示不安全?${NC}"
-    echo -e "  1. 宝塔面板 -> 网站 -> ${DOMAIN} -> SSL -> Let's Encrypt"
-    echo -e "  2. 或手动: python3 /www/server/panel/BT-Panel < /path/to/ssl_script.py"
+    echo -e "  方法 1: 宝塔面板 -> 网站 -> ${DOMAIN} -> SSL -> Let's Encrypt"
+    echo -e "  方法 2: 已有证书但 Nginx 未应用? 执行以下命令:"
+    echo -e "    bash ${INSTALL_DIR}/deploy.sh apply-ssl"
+    echo -e "  方法 3: 手动应用证书到 Nginx (示例):"
+    echo -e "    CERT=/www/server/panel/vhost/cert/${DOMAIN}/fullchain.pem"
+    echo -e "    KEY=/www/server/panel/vhost/cert/${DOMAIN}/privkey.pem"
+    echo -e "    CONF=/www/server/panel/vhost/nginx/${DOMAIN}.conf"
+    echo -e "    sed -i '/listen 80;/a\\\n    listen 443 ssl;\\\n    ssl_certificate    '\$CERT';\\\n    ssl_certificate_key '\$KEY';\\\n    ssl_protocols TLSv1.2 TLSv1.3;' \$CONF"
+    echo -e "    nginx -t && nginx -s reload"
     echo ""
     echo -e "  ${RED}# Nginx 配置不生效?${NC}"
     echo -e "  1. nginx -t (检查语法)"
@@ -3056,6 +3125,23 @@ NGINXDEFAULT
         fi
     fi
 
+    # 1.1 禁用宝塔默认 0.default.conf (它会拦截所有未匹配的请求)
+    local default_conf="${NGINX_CONF_DIR}/0.default.conf"
+    if [[ -f "${default_conf}" ]]; then
+        warn "检测到 ${default_conf}, 重命名为 .disabled 避免拦截请求"
+        /bin/mv -f "${default_conf}" "${default_conf}.disabled" 2>/dev/null || true
+    fi
+
+    # 1.2 写入默认 catch-all server (兜底, 防止默认 404 页)
+    info "写入默认 catch-all server"
+    cat > "${NGINX_CONF_DIR}/_catch_all.conf" <<EOFCONF
+server {
+    listen 80 default_server;
+    server_name _;
+    return 301 https://${DOMAIN}\$request_uri;
+}
+EOFCONF
+
     # 2. 写入主站配置
     info "写入主站配置: ${DOMAIN} -> ${FRONTEND_PORT}"
     cat > "${NGINX_CONF_DIR}/${DOMAIN}.conf" <<EOFCONF
@@ -3184,6 +3270,10 @@ EOFCONF
             warn "  ${domain}: HTTP ${code} ✗"
         fi
     done
+
+    # 8. 应用 SSL 证书 (如果已有)
+    info "检测并应用 SSL 证书..."
+    setup_ssl
 }
 
 # ---------------------- 重新配置第三方服务 ----------------------
@@ -3331,6 +3421,14 @@ main() {
             fix_nginx_configs
             exit 0
             ;;
+        apply-ssl|ssl)
+            # 应用 SSL 证书到 Nginx (检测已有证书或申请新证书)
+            setup_ssl
+            echo ""
+            info "SSL 证书应用完成!"
+            echo "使用浏览器访问 https://${DOMAIN} 验证 SSL 是否生效"
+            exit 0
+            ;;
         install|"")
             ;;
         *)
@@ -3343,6 +3441,7 @@ main() {
             echo "  uninstall    卸载 (保留数据需 KEEP_DATA=1)"
             echo "  reconfigure  重新配置第三方服务 (OAuth/SMTP/支付)"
             echo "  fix-nginx    修复 Nginx 反代配置并启动"
+            echo "  apply-ssl    应用 SSL 证书到 Nginx (检测已有或申请新证书)"
             echo ""
             echo "环境变量:"
             echo "  DOMAIN              主域名 (如 bbsmc.org.cn)"
