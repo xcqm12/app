@@ -1774,8 +1774,14 @@ NGINXDEFAULT
     # 2. 确保宝塔 vhost/nginx 目录被 nginx.conf include
     if [[ -f "${NGINX_MAIN}" ]] && ! grep -q "vhost/nginx" "${NGINX_MAIN}" 2>/dev/null; then
         warn "nginx.conf 未 include 宝塔 vhost/nginx 目录, 自动添加"
-        # 在 http { 行后添加 include (用 sed 兼容语法)
         sed -i '/http {/a\    include /www/server/panel/vhost/nginx/*.conf;' "${NGINX_MAIN}"
+    fi
+
+    # 2.1 禁用宝塔默认 0.default.conf (它会拦截所有未匹配的请求)
+    local default_conf="${NGINX_CONF_DIR}/0.default.conf"
+    if [[ -f "${default_conf}" ]]; then
+        warn "检测到 ${default_conf}, 重命名为 .disabled 避免拦截请求"
+        /bin/mv -f "${default_conf}" "${default_conf}.disabled" 2>/dev/null || true
     fi
 
     # 4. 创建 vhost 目录
@@ -1869,6 +1875,16 @@ server {
     location ~ /\. {
         deny all;
     }
+}
+EOFCONF
+
+    # ---------- 默认 catch-all server (兜底, 防止 404) ----------
+    info "写入默认 server (兜底, 防止默认 404 页)"
+    cat > "${NGINX_CONF_DIR}/_catch_all.conf" <<EOFCONF
+server {
+    listen 80 default_server;
+    server_name _;
+    return 301 https://${DOMAIN}\$request_uri;
 }
 EOFCONF
 
@@ -2075,6 +2091,24 @@ PYEOF
             fi
         fi
     done
+
+    # 添加 SSL catch-all server (防止 HTTPS 请求显示证书错误)
+    local catch_all_ssl="/www/server/panel/vhost/nginx/_catch_all_ssl.conf"
+    local ssl_cert_path="/www/server/panel/vhost/cert/${DOMAIN}/fullchain.pem"
+    local ssl_key_path="/www/server/panel/vhost/cert/${DOMAIN}/privkey.pem"
+    if [[ -f "${ssl_cert_path}" && -f "${ssl_key_path}" ]]; then
+        cat > "${catch_all_ssl}" <<EOFCONF
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    ssl_certificate    ${ssl_cert_path};
+    ssl_certificate_key ${ssl_key_path};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    return 301 https://${DOMAIN}\$request_uri;
+}
+EOFCONF
+        info "已添加 SSL catch-all server"
+    fi
 
     nginx -t 2>/dev/null && nginx -s reload 2>/dev/null
     # SSL 配置完成后立即修复 http2 兼容性 (宝塔 acme_v2 可能写入 http2 指令)
@@ -2385,6 +2419,28 @@ post_deploy_verify() {
         warn "  2. 如果前端未启动: 检查 .output 目录是否完整"
         warn "  3. 如果 Nginx 未生效: 运行 nginx -t 检查语法"
     fi
+
+    # 诊断: 显示 nginx 实际加载的配置
+    info "Nginx 诊断信息:"
+    local nginx_bin
+    nginx_bin=$(command -v nginx 2>/dev/null || echo "/usr/sbin/nginx")
+    local nginx_main
+    nginx_main=$("${nginx_bin}" -V 2>&1 | grep -oP '\-\-conf-path=\K[^ ]+' 2>/dev/null || echo "/etc/nginx/nginx.conf")
+    echo "  nginx.conf: ${nginx_main}"
+    echo "  包含的 vhost 配置:"
+    local vhost_dir="/www/server/panel/vhost/nginx"
+    if [[ -d "${vhost_dir}" ]]; then
+        for f in "${vhost_dir}"/*.conf; do
+            [[ -f "${f}" ]] || continue
+            local server_names
+            server_names=$(grep -oP 'server_name\s+\K[^;]+' "${f}" 2>/dev/null || echo "?")
+            local ports
+            ports=$(grep -oP 'listen\s+\K[^;]+' "${f}" 2>/dev/null | tr '\n' ' ' || echo "")
+            echo "    $(basename "${f}"): server_name=[${server_names}] listen=[${ports}]"
+        done
+    fi
+    echo "  nginx -t 测试:"
+    "${nginx_bin}" -t 2>&1 || true
 }
 
 # ---------------------- 完成提示 ----------------------
@@ -2432,6 +2488,22 @@ print_summary() {
     else
         echo -e "  ${RED}✗${NC} nginx (反向代理)              状态: ${RED}${nginx_state}${NC}"
     fi
+
+    # SSL 证书状态
+    echo ""
+    echo -e "${CYAN}──────────────── SSL 证书状态 ────────────────${NC}"
+    echo ""
+    for domain in "${DOMAIN}" "${API_DOMAIN}" "${CDN_DOMAIN}"; do
+        local cert_path="/www/server/panel/vhost/cert/${domain}/fullchain.pem"
+        local key_path="/www/server/panel/vhost/cert/${domain}/privkey.pem"
+        if [[ -f "${cert_path}" && -f "${key_path}" ]]; then
+            local cert_expiry
+            cert_expiry=$(openssl x509 -in "${cert_path}" -noout -enddate 2>/dev/null | cut -d= -f2 || echo "未知")
+            echo -e "  ${GREEN}✓${NC} ${domain}: 有效 (到期: ${cert_expiry})"
+        else
+            echo -e "  ${RED}✗${NC} ${domain}: 证书未配置"
+        fi
+    done
 
     echo ""
     echo -e "${CYAN}──────────────── Docker 容器状态 ────────────────${NC}"
@@ -2587,6 +2659,29 @@ print_summary() {
     echo -e "  3. 配置定时备份: ${DATA_DIR} 目录"
     echo -e "  4. 在宝塔面板 -> 计划任务, 添加数据库定时备份"
     echo -e "  5. 修改宝塔面板默认端口与登录入口 (安全建议)"
+
+    # 常见问题快速修复
+    echo ""
+    echo -e "${YELLOW}──────────────── 常见问题快速修复 ────────────────${NC}"
+    echo ""
+    echo -e "  ${RED}# 网站显示 404 Not Found?${NC}"
+    echo -e "  1. 检查前端服务: systemctl status bbsmc-frontend"
+    echo -e "  2. 重启前端: systemctl restart bbsmc-frontend"
+    echo -e "  3. 测试本地: curl -I http://127.0.0.1:${FRONTEND_PORT}"
+    echo -e "  4. 查看日志: tail -30 /var/log/bbsmc-frontend.log"
+    echo ""
+    echo -e "  ${RED}# 网站显示 502 Bad Gateway?${NC}"
+    echo -e "  1. 前端/后端服务未启动, 检查 systemctl status"
+    echo -e "  2. .env 配置错误, 检查 ${INSTALL_DIR}/apps/labrinth/.env"
+    echo ""
+    echo -e "  ${RED}# SSL 证书未配置/显示不安全?${NC}"
+    echo -e "  1. 宝塔面板 -> 网站 -> ${DOMAIN} -> SSL -> Let's Encrypt"
+    echo -e "  2. 或手动: python3 /www/server/panel/BT-Panel < /path/to/ssl_script.py"
+    echo ""
+    echo -e "  ${RED}# Nginx 配置不生效?${NC}"
+    echo -e "  1. nginx -t (检查语法)"
+    echo -e "  2. nginx -s reload (重新加载)"
+    echo -e "  3. 检查是否有 0.default.conf 冲突: ls /www/server/panel/vhost/nginx/"
 
     # 镜像模式额外说明
     if [[ "${MIRROR_MODE}" == "1" ]]; then
