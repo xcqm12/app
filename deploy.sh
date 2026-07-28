@@ -1620,9 +1620,9 @@ fix_nginx_http2_compat() {
     done
 
     if [[ ${total_fixed} -gt 0 ]]; then
-        info "http2/SSL 兼容性修复完成 (nginx ${nginx_version}, 共修复 ${total_fixed} 个文件)"
+        info "http2/SSL 兼容性修复完成 (nginx ${NGINX_VERSION}, 共修复 ${total_fixed} 个文件)"
     else
-        info "nginx ${nginx_version} 配置已兼容 (无需 http2/SSL 修复)"
+        info "nginx ${NGINX_VERSION} 配置已兼容 (无需 http2/SSL 修复)"
     fi
     return 0
 }
