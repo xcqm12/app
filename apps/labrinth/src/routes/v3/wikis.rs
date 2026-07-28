@@ -50,6 +50,7 @@ pub struct MsgWiki {
 }
 
 #[derive(Deserialize, Serialize, Validate)]
+#[allow(dead_code)]
 pub struct WikiSubmitAgain {
     pub id: WikiCacheId,
 }

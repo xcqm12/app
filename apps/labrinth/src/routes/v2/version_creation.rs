@@ -82,6 +82,7 @@ pub struct InitialVersionData {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
 struct InitialFileData {
     #[serde(default = "HashMap::new")]
     pub file_types: HashMap<String, Option<FileType>>, // 文件类型

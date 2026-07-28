@@ -1463,6 +1463,100 @@ EOF
     info "Systemd 服务配置完成"
 }
 
+# ---------------------- Nginx HTTP/2 兼容性修复 ----------------------
+fix_nginx_http2_compat() {
+    local nginx_bin
+    nginx_bin=$(command -v nginx 2>/dev/null || echo "/usr/sbin/nginx")
+    local NGINX_CONF_DIR="${1:-/www/server/panel/vhost/nginx}"
+
+    local nginx_version
+    nginx_version=$("${nginx_bin}" -v 2>&1 | grep -oP 'nginx/\K[0-9]+\.[0-9]+\.[0-9]+' 2>/dev/null || echo "0.0.0")
+    local major minor
+    major=$(echo "${nginx_version}" | cut -d. -f1)
+    minor=$(echo "${nginx_version}" | cut -d. -f2)
+
+    if [[ -z "${major}" ]] || [[ -z "${minor}" ]] || [[ "${major}" == "0" ]]; then
+        warn "无法检测 nginx 版本 (${nginx_version}), 默认不处理 http2 兼容"
+        return 0
+    fi
+
+    # nginx >= 1.25.1 支持 http2 on; 指令
+    # nginx < 1.25.1 需要使用 listen 443 ssl http2; 旧式语法
+    local supports_http2_directive=0
+    if [[ ${major} -gt 1 ]] || [[ ${major} -eq 1 && ${minor} -ge 25 ]]; then
+        local patch
+        patch=$("${nginx_bin}" -v 2>&1 | grep -oP '\-\-patch=\K[0-9]+' 2>/dev/null || echo "0")
+        if [[ ${minor} -ge 25 && ${patch} -ge 1 ]] || [[ ${major} -gt 1 ]] || [[ ${minor} -gt 25 ]]; then
+            supports_http2_directive=1
+        fi
+    fi
+
+    if [[ ${supports_http2_directive} -eq 1 ]]; then
+        info "nginx ${nginx_version} 支持 http2 on; 指令, 无需兼容处理"
+        return 0
+    fi
+
+    warn "nginx ${nginx_version} 不支持 http2 on; 指令, 自动移除/替换以兼容"
+
+    # 扫描 vhost 配置目录, 修复 http2 指令
+    if [[ -d "${NGINX_CONF_DIR}" ]]; then
+        for conf in "${NGINX_CONF_DIR}"/*.conf; do
+            [[ -f "${conf}" ]] || continue
+
+            # 备份 (每次都更新, 确保最新)
+            /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
+
+            local modified=0
+
+            # 如果存在 http2 on; 指令, 尝试将 http2 合并到 listen 443 行
+            if grep -q 'http2[[:space:]]*on' "${conf}" 2>/dev/null; then
+                warn "  修复 ${conf}: http2 on; 指令"
+                # 尝试将 listen 443 ssl; 改为 listen 443 ssl http2; (仅当 listen 行未包含 http2)
+                if grep -qE 'listen[[:space:]]+443.*ssl' "${conf}" 2>/dev/null && ! grep -qE 'listen[[:space:]]+443.*http2' "${conf}" 2>/dev/null; then
+                    sed -i 's/\(listen[[:space:]]\+443[[:space:]]\+ssl\);/\1 http2;/g' "${conf}" 2>/dev/null || true
+                    info "    将 http2 合并到 listen 443 行"
+                fi
+                # 移除独立的 http2 on; / http2 off; 指令行
+                sed -i '/http2[[:space:]]*on/d; /http2[[:space:]]*off/d' "${conf}" 2>/dev/null || true
+                modified=1
+            fi
+
+            # 移除 http2 443; 指令 (旧版 nginx 也不支持)
+            if grep -q 'http2[[:space:]]*443' "${conf}" 2>/dev/null; then
+                warn "  修复 ${conf}: 移除 http2 443; 指令"
+                sed -i '/http2[[:space:]]*443/d' "${conf}" 2>/dev/null || true
+                modified=1
+            fi
+
+            # 如果 listen 行已经有 http2 (被宝塔新版本写入), 确保不被误删
+            # 某些宝塔版本可能将 http2 写在 listen 行中, 这是兼容的
+            [[ ${modified} -eq 1 ]] && info "  ${conf} 已修复"
+        done
+    fi
+
+    # 同样修复 conf.d 目录
+    local nginx_conf_base
+    nginx_conf_base=$(/usr/bin/dirname "$("${nginx_bin}" -V 2>&1 | grep -oP '\-\-conf-path=\K[^ ]+' 2>/dev/null || echo "/etc/nginx/nginx.conf")")
+    local conf_d="${nginx_conf_base}/conf.d"
+    if [[ -d "${conf_d}" ]]; then
+        for conf in "${conf_d}"/*.conf; do
+            [[ -f "${conf}" ]] || continue
+            if grep -q 'http2[[:space:]]*on\|http2[[:space:]]*off' "${conf}" 2>/dev/null; then
+                warn "  修复 ${conf}: 移除 http2 指令"
+                /bin/cp -f "${conf}" "${conf}.http2bak" 2>/dev/null || true
+                # 尝试将 http2 合并到 listen 443 (仅当未包含 http2 时)
+                if grep -qE 'listen[[:space:]]+443.*ssl' "${conf}" 2>/dev/null && ! grep -qE 'listen[[:space:]]+443.*http2' "${conf}" 2>/dev/null; then
+                    sed -i 's/\(listen[[:space:]]\+443[[:space:]]\+ssl\);/\1 http2;/g' "${conf}" 2>/dev/null || true
+                fi
+                sed -i '/http2[[:space:]]*on/d; /http2[[:space:]]*off/d' "${conf}" 2>/dev/null || true
+            fi
+        done
+    fi
+
+    info "http2 兼容性修复完成"
+    return 0
+}
+
 # ---------------------- Nginx 反代 (宝塔) ----------------------
 setup_nginx() {
     step "配置 Nginx 反向代理 (宝塔)"
@@ -1491,12 +1585,19 @@ setup_nginx() {
     # 如果 nginx.conf 缺少 events 块, 自动修复
     if [[ -f "${NGINX_MAIN}" ]] && ! grep -q "events[[:space:]]*{" "${NGINX_MAIN}" 2>/dev/null; then
         warn "${NGINX_MAIN} 缺少 events 块, 尝试修复"
+        [[ -f "${NGINX_MAIN}" ]] && /bin/cp -f "${NGINX_MAIN}" "${NGINX_MAIN}.bak.$(date +%s)" 2>/dev/null || true
         if [[ -f "/www/server/nginx/conf/nginx.conf" ]] && grep -q "events[[:space:]]*{" "/www/server/nginx/conf/nginx.conf" 2>/dev/null && [[ "${NGINX_MAIN}" != "/www/server/nginx/conf/nginx.conf" ]]; then
             warn "从 /www/server/nginx/conf/nginx.conf 恢复"
             /bin/cp -f "/www/server/nginx/conf/nginx.conf" "${NGINX_MAIN}" 2>/dev/null || true
         else
-            warn "创建最小 nginx.conf"
-            cat > "${NGINX_MAIN}" << 'NGINXDEFAULT'
+            warn "创建最小 nginx.conf (已备份原文件)"
+            local mime_path="/etc/nginx/mime.types"
+            [[ -f "${mime_path}" ]] || mime_path="/www/server/nginx/conf/mime.types"
+            [[ -f "${mime_path}" ]] || mime_path="/www/server/nginx/conf/nginx_mime_types.conf"
+            [[ -f "${mime_path}" ]] || mime_path=""
+            local mime_include=""
+            [[ -n "${mime_path}" ]] && mime_include="include ${mime_path};"
+            cat > "${NGINX_MAIN}" << NGINXDEFAULT
 user www-data;
 worker_processes auto;
 pid /run/nginx.pid;
@@ -1506,7 +1607,7 @@ events {
 }
 
 http {
-    include /etc/nginx/mime.types;
+    ${mime_include}
     default_type application/octet-stream;
     sendfile on;
     keepalive_timeout 65;
@@ -1711,6 +1812,9 @@ EOFCONF
         "${nginx_bin}" 2>/dev/null || systemctl start nginx 2>/dev/null || true
         sleep 1
     fi
+
+    # 修复 http2 指令兼容性 (宝塔默认 nginx < 1.25.1)
+    fix_nginx_http2_compat "${NGINX_CONF_DIR}"
 
     # 测试配置
     local nginx_test_output
@@ -2015,6 +2119,9 @@ server {
 }
 EOFCONF
 
+    # 修复 http2 指令兼容性 (宝塔默认 nginx < 1.25.1)
+    fix_nginx_http2_compat "/www/server/panel/vhost/nginx"
+
     # 测试并重载
     local nginx_test_output
     nginx_test_output=$(nginx -t 2>&1) || true
@@ -2150,57 +2257,195 @@ print_summary() {
     local mirror_status="未启用 纯本地"
     [[ "${MIRROR_MODE}" == "1" ]] && mirror_status="已启用 GET代理官网 POST本地上传"
 
-    cat <<EOF
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║              BBSMC 部署成功! (Deployment Success)              ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
 
-${GREEN}================================================================${NC}
-${GREEN}   BBSMC 部署成功!${NC}
-${GREEN}================================================================${NC}
+    echo -e "${CYAN}──────────────── 服务状态 (Service Status) ────────────────${NC}"
+    echo ""
 
-${CYAN}访问地址:${NC}
-  主站:       https://${DOMAIN}
-  API:        https://${API_DOMAIN}
-  CDN:        https://${CDN_DOMAIN}
-  健康检查:   curl http://127.0.0.1:${BACKEND_PORT}/_internal/health
-  镜像模式:   ${mirror_status}
+    local backend_state backend_pid backend_mem backend_uptime
+    backend_state=$(systemctl is-active bbsmc-labrinth 2>/dev/null || echo "unknown")
+    backend_pid=$(systemctl show -p MainPID --value bbsmc-labrinth 2>/dev/null || echo "-")
+    backend_mem=$(systemctl show -p MemoryCurrent --value bbsmc-labrinth 2>/dev/null || echo "0")
+    backend_uptime=$(systemctl show -p ActiveEnterTimestamp --value bbsmc-labrinth 2>/dev/null || echo "-")
+    backend_mem=$(( backend_mem / 1024 / 1024 ))
+    if [[ "${backend_state}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} bbsmc-labrinth (后端 API)    状态: ${GREEN}active${NC}  PID: ${backend_pid}  内存: ${backend_mem}MB"
+    else
+        echo -e "  ${RED}✗${NC} bbsmc-labrinth (后端 API)    状态: ${RED}${backend_state}${NC}"
+    fi
 
-${CYAN}服务管理:${NC}
-  systemctl status  bbsmc-labrinth bbsmc-frontend
-  systemctl restart bbsmc-labrinth bbsmc-frontend
-  journalctl -u bbsmc-labrinth -f
-  journalctl -u bbsmc-frontend -f
+    local frontend_state frontend_pid frontend_mem frontend_uptime
+    frontend_state=$(systemctl is-active bbsmc-frontend 2>/dev/null || echo "unknown")
+    frontend_pid=$(systemctl show -p MainPID --value bbsmc-frontend 2>/dev/null || echo "-")
+    frontend_mem=$(systemctl show -p MemoryCurrent --value bbsmc-frontend 2>/dev/null || echo "0")
+    frontend_mem=$(( frontend_mem / 1024 / 1024 ))
+    if [[ "${frontend_state}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} bbsmc-frontend (前端 Nuxt)   状态: ${GREEN}active${NC}  PID: ${frontend_pid}  内存: ${frontend_mem}MB"
+    else
+        echo -e "  ${RED}✗${NC} bbsmc-frontend (前端 Nuxt)   状态: ${RED}${frontend_state}${NC}"
+    fi
 
-${CYAN}数据库管理:${NC}
-  cd ${INSTALL_DIR}
-  docker compose -f docker-compose.prod.yml ps
-  docker compose -f docker-compose.prod.yml logs -f
+    local nginx_state
+    nginx_state=$(systemctl is-active nginx 2>/dev/null || echo "unknown")
+    if [[ "${nginx_state}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} nginx (反向代理)              状态: ${GREEN}active${NC}"
+    else
+        echo -e "  ${RED}✗${NC} nginx (反向代理)              状态: ${RED}${nginx_state}${NC}"
+    fi
 
-${CYAN}凭据文件:${NC}
-  ${INSTALL_DIR}/deploy-credentials.txt  (chmod 600)
+    echo ""
+    echo -e "${CYAN}──────────────── Docker 容器状态 ────────────────${NC}"
+    echo ""
 
-${YELLOW}后续建议:${NC}
-  1. 在宝塔面板 -> 网站 -> SSL, 确认证书已申请 (如自动申请失败)
-  2. 编辑 ${INSTALL_DIR}/apps/labrinth/.env 配置 OAuth/SMTP/支付等第三方服务
-  3. 配置定时备份: ${DATA_DIR} 目录
-  4. 在宝塔面板 -> 计划任务, 添加数据库定时备份
-  5. 修改宝塔面板默认端口与登录入口 (安全建议)
+    if command -v docker &>/dev/null; then
+        ( cd "${INSTALL_DIR}" 2>/dev/null && docker compose -f docker-compose.prod.yml ps 2>/dev/null ) || \
+        ( cd "${INSTALL_DIR}" 2>/dev/null && docker-compose -f docker-compose.prod.yml ps 2>/dev/null ) || \
+        echo "  (Docker 容器未运行或 compose 文件不存在)"
+    else
+        echo "  Docker 未安装"
+    fi
 
-EOF
+    echo ""
+    echo -e "${CYAN}──────────────── 后端日志 (最近 10 行) ────────────────${NC}"
+    echo ""
+    if [[ -f /var/log/bbsmc-labrinth.log ]]; then
+        sed 's/^/  /' < <(tail -10 /var/log/bbsmc-labrinth.log 2>/dev/null)
+    else
+        echo "  (无日志)"
+    fi
+
+    echo ""
+    echo -e "${CYAN}──────────────── 前端日志 (最近 5 行) ────────────────${NC}"
+    echo ""
+    if [[ -f /var/log/bbsmc-frontend.log ]]; then
+        sed 's/^/  /' < <(tail -5 /var/log/bbsmc-frontend.log 2>/dev/null)
+    else
+        echo "  (无日志)"
+    fi
+
+    echo ""
+    echo -e "${CYAN}──────────────── 健康检查 (Health Check) ────────────────${NC}"
+    echo ""
+
+    local backend_code
+    backend_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 3 --max-time 5 "http://127.0.0.1:${BACKEND_PORT}/v2/tag/category" 2>/dev/null || echo "000")
+    if [[ "${backend_code}" == "200" ]] || [[ "${backend_code}" == "401" ]] || [[ "${backend_code}" == "403" ]]; then
+        echo -e "  ${GREEN}✓${NC} 后端 API (127.0.0.1:${BACKEND_PORT})     HTTP ${GREEN}${backend_code}${NC}"
+    else
+        echo -e "  ${RED}✗${NC} 后端 API (127.0.0.1:${BACKEND_PORT})     HTTP ${RED}${backend_code}${NC}"
+    fi
+
+    local frontend_code
+    frontend_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 3 --max-time 5 "http://127.0.0.1:${FRONTEND_PORT}" 2>/dev/null || echo "000")
+    if [[ "${frontend_code}" == "200" ]] || [[ "${frontend_code}" == "301" ]] || [[ "${frontend_code}" == "302" ]]; then
+        echo -e "  ${GREEN}✓${NC} 前端服务 (127.0.0.1:${FRONTEND_PORT})    HTTP ${GREEN}${frontend_code}${NC}"
+    else
+        echo -e "  ${RED}✗${NC} 前端服务 (127.0.0.1:${FRONTEND_PORT})    HTTP ${RED}${frontend_code}${NC}"
+    fi
+
+    local db_code
+    db_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 3 --max-time 5 "http://127.0.0.1:${MEILI_PORT}" 2>/dev/null || echo "000")
+    if [[ "${db_code}" != "000" ]]; then
+        echo -e "  ${GREEN}✓${NC} Meilisearch (127.0.0.1:${MEILI_PORT})     HTTP ${GREEN}${db_code}${NC}"
+    else
+        echo -e "  ${RED}✗${NC} Meilisearch (127.0.0.1:${MEILI_PORT})     HTTP ${RED}${db_code}${NC}"
+    fi
+
+    echo ""
+    echo -e "${CYAN}──────────────── 系统信息 (System Info) ────────────────${NC}"
+    echo ""
+
+    local sys_mem
+    sys_mem=$(free -m 2>/dev/null | awk '/^Mem:/ {printf "%.0fMB / %.0fMB (%.0f%%)", $3, $2, $3/$2*100}' || echo "N/A")
+    echo -e "  内存:  ${sys_mem}"
+
+    local sys_disk
+    sys_disk=$(df -h "${INSTALL_DIR}" 2>/dev/null | awk 'NR==2 {print $3 " 已用 / " $2 " 总计 (" $5 " 使用率)"}' || echo "N/A")
+    echo -e "  磁盘:  ${sys_disk}"
+
+    local sys_uptime
+    sys_uptime=$(uptime -p 2>/dev/null || uptime 2>/dev/null | sed 's/.*up /已运行 /' | sed 's/, *[0-9]* user.*//' || echo "N/A")
+    echo -e "  运行:  ${sys_uptime}"
+
+    local sys_load
+    sys_load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}' || echo "N/A")
+    echo -e "  负载:  ${sys_load}"
+
+    echo ""
+    echo -e "${CYAN}──────────────── 访问地址 (Access URLs) ────────────────${NC}"
+    echo ""
+    echo -e "  ${GREEN}主站:${NC}        https://${DOMAIN}"
+    echo -e "  ${GREEN}API:${NC}         https://${API_DOMAIN}"
+    echo -e "  ${GREEN}CDN:${NC}         https://${CDN_DOMAIN}"
+    echo -e "  ${GREEN}健康检查:${NC}    curl http://127.0.0.1:${BACKEND_PORT}/_internal/health"
+    echo -e "  ${GREEN}镜像模式:${NC}    ${mirror_status}"
+
+    echo ""
+    echo -e "${CYAN}──────────────── 管理命令 (Management) ────────────────${NC}"
+    echo ""
+    echo -e "  ${YELLOW}# 服务状态/重启${NC}"
+    echo -e "  systemctl status  bbsmc-labrinth bbsmc-frontend"
+    echo -e "  systemctl restart bbsmc-labrinth bbsmc-frontend"
+    echo -e "  systemctl stop    bbsmc-labrinth bbsmc-frontend"
+    echo ""
+    echo -e "  ${YELLOW}# 实时日志${NC}"
+    echo -e "  journalctl -u bbsmc-labrinth -f"
+    echo -e "  journalctl -u bbsmc-frontend -f"
+    echo -e "  tail -f /var/log/bbsmc-labrinth.log"
+    echo -e "  tail -f /var/log/bbsmc-frontend.log"
+    echo ""
+    echo -e "  ${YELLOW}# 数据库管理${NC}"
+    echo -e "  cd ${INSTALL_DIR}"
+    echo -e "  docker compose -f docker-compose.prod.yml ps"
+    echo -e "  docker compose -f docker-compose.prod.yml logs -f postgres_db"
+    echo -e "  docker compose -f docker-compose.prod.yml logs -f redis_cache"
+    echo -e "  docker compose -f docker-compose.prod.yml logs -f meilisearch"
+    echo -e "  docker compose -f docker-compose.prod.yml logs -f clickhouse"
+    echo ""
+    echo -e "  ${YELLOW}# Nginx 管理${NC}"
+    echo -e "  nginx -t"
+    echo -e "  nginx -s reload"
+    echo -e "  systemctl status nginx"
+    echo ""
+    echo -e "  ${YELLOW}# 凭据文件${NC}"
+    echo -e "  ${INSTALL_DIR}/deploy-credentials.txt  (chmod 600)"
+
+    echo ""
+    echo -e "${YELLOW}──────────────── 后续建议 ────────────────${NC}"
+    echo ""
+    echo -e "  1. 在宝塔面板 -> 网站 -> SSL, 确认证书已申请 (如自动申请失败)"
+    echo -e "  2. 编辑 ${INSTALL_DIR}/apps/labrinth/.env 配置 OAuth/SMTP/支付等第三方服务"
+    echo -e "  3. 配置定时备份: ${DATA_DIR} 目录"
+    echo -e "  4. 在宝塔面板 -> 计划任务, 添加数据库定时备份"
+    echo -e "  5. 修改宝塔面板默认端口与登录入口 (安全建议)"
 
     # 镜像模式额外说明
     if [[ "${MIRROR_MODE}" == "1" ]]; then
-        cat <<EOF
-${CYAN}镜像模式说明:${NC}
-  - 浏览/搜索 GET:   代理到 modrinth.com / api.modrinth.com, 显示官方 mod
-  - 上传/修改 POST:  路由到本地 labrinth, 存储在本地数据库
-  - 本地 mod 访问:    先查本地, 404 时回源官网
-  - 用户/认证:        走本地 labrinth 本地用户体系
-  - 本地上传不同步到官网
-  - 禁用镜像: cp /www/server/panel/vhost/nginx/${DOMAIN}.conf.nomirror /www/server/panel/vhost/nginx/${DOMAIN}.conf
-              cp /www/server/panel/vhost/nginx/${API_DOMAIN}.conf.nomirror /www/server/panel/vhost/nginx/${API_DOMAIN}.conf
-              nginx -s reload
-
-EOF
+        echo ""
+        echo -e "${CYAN}──────────────── 镜像模式说明 ────────────────${NC}"
+        echo ""
+        echo -e "  - 浏览/搜索 GET:   代理到 modrinth.com / api.modrinth.com, 显示官方 mod"
+        echo -e "  - 上传/修改 POST:  路由到本地 labrinth, 存储在本地数据库"
+        echo -e "  - 本地 mod 访问:    先查本地, 404 时回源官网"
+        echo -e "  - 用户/认证:        走本地 labrinth 本地用户体系"
+        echo -e "  - 本地上传不同步到官网"
+        echo -e "  - 禁用镜像: cp /www/server/panel/vhost/nginx/${DOMAIN}.conf.nomirror /www/server/panel/vhost/nginx/${DOMAIN}.conf"
+        echo -e "              cp /www/server/panel/vhost/nginx/${API_DOMAIN}.conf.nomirror /www/server/panel/vhost/nginx/${API_DOMAIN}.conf"
+        echo -e "              nginx -s reload"
     fi
+
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║   部署完成! enjoy your BBSMC instance!                        ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
 }
 
 # ---------------------- 卸载 ----------------------
@@ -2442,12 +2687,19 @@ fix_nginx_configs() {
     # 如果 nginx.conf 缺少 events 块, 自动修复
     if [[ -f "${NGINX_MAIN}" ]] && ! grep -q "events[[:space:]]*{" "${NGINX_MAIN}" 2>/dev/null; then
         warn "${NGINX_MAIN} 缺少 events 块, 尝试修复"
+        [[ -f "${NGINX_MAIN}" ]] && /bin/cp -f "${NGINX_MAIN}" "${NGINX_MAIN}.bak.$(date +%s)" 2>/dev/null || true
         if [[ -f "/www/server/nginx/conf/nginx.conf" ]] && grep -q "events[[:space:]]*{" "/www/server/nginx/conf/nginx.conf" 2>/dev/null && [[ "${NGINX_MAIN}" != "/www/server/nginx/conf/nginx.conf" ]]; then
             warn "从 /www/server/nginx/conf/nginx.conf 恢复"
             /bin/cp -f "/www/server/nginx/conf/nginx.conf" "${NGINX_MAIN}" 2>/dev/null || true
         else
-            warn "创建最小 nginx.conf"
-            cat > "${NGINX_MAIN}" << 'NGINXDEFAULT'
+            warn "创建最小 nginx.conf (已备份原文件)"
+            local mime_path="/etc/nginx/mime.types"
+            [[ -f "${mime_path}" ]] || mime_path="/www/server/nginx/conf/mime.types"
+            [[ -f "${mime_path}" ]] || mime_path="/www/server/nginx/conf/nginx_mime_types.conf"
+            [[ -f "${mime_path}" ]] || mime_path=""
+            local mime_include=""
+            [[ -n "${mime_path}" ]] && mime_include="include ${mime_path};"
+            cat > "${NGINX_MAIN}" << NGINXDEFAULT
 user www-data;
 worker_processes auto;
 pid /run/nginx.pid;
@@ -2457,7 +2709,7 @@ events {
 }
 
 http {
-    include /etc/nginx/mime.types;
+    ${mime_include}
     default_type application/octet-stream;
     sendfile on;
     keepalive_timeout 65;
@@ -2634,6 +2886,7 @@ EOFCONF
 
     # 5. 测试并启动 Nginx
     info "测试 Nginx 配置..."
+    fix_nginx_http2_compat "${NGINX_CONF_DIR}"
     local test_output
     test_output=$("${nginx_bin}" -t 2>&1) || true
     echo "${test_output}"
