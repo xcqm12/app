@@ -1,0 +1,64 @@
+# ============ 修复 1: 确保 vhost 目录被 nginx.conf include ============
+echo "=== 检查 nginx.conf include ==="
+grep -n "vhost" /etc/nginx/nginx.conf 2>/dev/null
+grep -n "vhost" /www/server/nginx/conf/nginx.conf 2>/dev/null
+
+echo ""
+echo "=== 修复: 在实际 nginx.conf 中添加 include ==="
+# 确定实际的 nginx.conf
+if [[ -f "/www/server/nginx/conf/nginx.conf" ]]; then
+    CONF="/www/server/nginx/conf/nginx.conf"
+else
+    CONF="/etc/nginx/nginx.conf"
+fi
+echo "使用配置: $CONF"
+
+# 如果没有 vhost include, 添加
+if ! grep -q "vhost/nginx" "$CONF"; then
+    # 确保在 http { 块内
+    sed -i '/http {/a\    include /www/server/panel/vhost/nginx/*.conf;' "$CONF"
+    echo "已添加 vhost include"
+else
+    echo "vhost include 已存在"
+fi
+
+# ============ 修复 2: 修正 API 路径 (去掉 /api 前缀) ============
+# 问题: location 用 /api/v[0-9]+/ 但实际路径是 /v2/auth/create
+cat > /www/server/panel/vhost/nginx/api.bbsmc.org.cn.conf << 'APICONF'
+# BBSMC API 反代 - 修正版
+# GET 请求 -> api.modrinth.com (展示官方数据)
+# POST/PUT/PATCH/DELETE -> 本地 labrinth (本地上传)
+
+map $request_method $api_upstream {
+    default  "https://api.modrinth.com";
+    POST     "http://127.0.0.1:8000";
+    PUT      "http://127.0.0.1:8000";
+    PATCH    "http://127.0.0.1:8000";
+    DELETE   "http://127.0.0.1:8000";
+echo "SSL 证书: $(ls /www/server/panel/vhost/cert/api.bbsmc.org.cn/ 2>/dev/null && echo '存在' || echo '不存在 - 请在宝塔面板申请')"
+=== 检查 nginx.conf include ===
+12:    include /www/server/panel/vhost/nginx/tcp/*.conf;
+96:include /www/server/panel/vhost/nginx/*.conf;
+
+=== 修复: 在实际 nginx.conf 中添加 include ===
+使用配置: /www/server/nginx/conf/nginx.conf
+vhost include 已存在
+API 配置已更新
+
+=== 测试 nginx ===
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+2026/07/28 05:13:05 [emerg] 952664#952664: no "events" section in configuration
+nginx: configuration file /etc/nginx/nginx.conf test failed
+
+=== 重载 nginx ===
+2026/07/28 05:13:05 [emerg] 952665#952665: no "events" section in configuration
+Job for nginx.service failed because the control process exited with error code.
+See "systemctl status nginx.service" and "journalctl -xeu nginx.service" for details.
+
+=== 验证所有接口 ===
+1. 后端直接: 200
+2. Nginx HTTP: 404
+3. 注册接口: 404
+
+=== SSL 状态 ===
+SSL 证书: 不存在 - 请在宝塔面板申请

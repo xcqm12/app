@@ -1,0 +1,321 @@
+use crate::database::redis::RedisPool;
+use crate::file_hosting::FileHost;
+use crate::models::notifications::Notification;
+use crate::models::projects::Project;
+use crate::models::users::{Badges, Role, User};
+use crate::models::v2::notifications::LegacyNotification;
+use crate::models::v2::projects::LegacyProject;
+use crate::models::v2::user::LegacyUser;
+use crate::queue::session::AuthQueue;
+use crate::routes::{ApiError, v2_reroute, v3};
+use actix_web::{HttpRequest, HttpResponse, delete, get, patch, web};
+use lazy_static::lazy_static;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use std::sync::Arc;
+use validator::Validate;
+
+pub fn config(cfg: &mut web::ServiceConfig) {
+    cfg.service(user_auth_get);
+    cfg.service(users_get);
+
+    cfg.service(
+        web::scope("user")
+            .service(user_get)
+            .service(projects_list)
+            .service(user_forum_content)
+            .service(user_delete)
+            .service(user_edit)
+            .service(user_icon_edit)
+            .service(user_notifications)
+            .service(user_follows)
+            // 用户封禁相关路由
+            .route("bans", web::get().to(super::bans::get_my_bans))
+            .route(
+                "bans/{ban_id}/appeal",
+                web::post().to(super::bans::create_appeal),
+            )
+            .route(
+                "appeals/{appeal_id}",
+                web::get().to(super::bans::get_my_appeal),
+            )
+            .route(
+                "{user_id}/profile_reviews/{review_id}/cancel",
+                web::post()
+                    .to(crate::routes::v3::profile_reviews::cancel_review),
+            ),
+    );
+}
+
+#[get("user")]
+pub async fn user_auth_get(
+    req: HttpRequest,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+    session_queue: web::Data<AuthQueue>,
+) -> Result<HttpResponse, ApiError> {
+    let response = v3::users::user_auth_get(req, pool, redis, session_queue)
+        .await
+        .or_else(v2_reroute::flatten_404_error)?;
+
+    // 将响应转换为 V2 格式
+    match v2_reroute::extract_ok_json::<User>(response).await {
+        Ok(user) => {
+            let user = LegacyUser::from(user);
+            Ok(HttpResponse::Ok().json(user))
+        }
+        Err(response) => Ok(response),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UserIds {
+    pub ids: String,
+}
+
+#[get("users")]
+pub async fn users_get(
+    web::Query(ids): web::Query<UserIds>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+) -> Result<HttpResponse, ApiError> {
+    let response = v3::users::users_get(
+        web::Query(v3::users::UserIds { ids: ids.ids }),
+        pool,
+        redis,
+    )
+    .await
+    .or_else(v2_reroute::flatten_404_error)?;
+
+    //将响应转换为 V2 格式
+    match v2_reroute::extract_ok_json::<Vec<User>>(response).await {
+        Ok(users) => {
+            let legacy_users: Vec<LegacyUser> =
+                users.into_iter().map(LegacyUser::from).collect();
+            Ok(HttpResponse::Ok().json(legacy_users))
+        }
+        Err(response) => Ok(response),
+    }
+}
+
+#[get("{id}")]
+pub async fn user_get(
+    info: web::Path<(String,)>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+) -> Result<HttpResponse, ApiError> {
+    let response = v3::users::user_get(info, pool, redis)
+        .await
+        .or_else(v2_reroute::flatten_404_error)?;
+
+    //将响应转换为 V2 格式
+    match v2_reroute::extract_ok_json::<User>(response).await {
+        Ok(user) => {
+            let user = LegacyUser::from(user);
+            Ok(HttpResponse::Ok().json(user))
+        }
+        Err(response) => Ok(response),
+    }
+}
+
+#[get("{user_id}/projects")]
+pub async fn projects_list(
+    req: HttpRequest,
+    info: web::Path<(String,)>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+    session_queue: web::Data<AuthQueue>,
+) -> Result<HttpResponse, ApiError> {
+    let response = v3::users::projects_list(
+        req,
+        info,
+        pool.clone(),
+        redis.clone(),
+        session_queue,
+    )
+    .await
+    .or_else(v2_reroute::flatten_404_error)?;
+
+    // 将响应转换为 V2 格式
+    match v2_reroute::extract_ok_json::<Vec<Project>>(response).await {
+        Ok(project) => {
+            let legacy_projects =
+                LegacyProject::from_many(project, &**pool, &redis).await?;
+            Ok(HttpResponse::Ok().json(legacy_projects))
+        }
+        Err(response) => Ok(response),
+    }
+}
+
+lazy_static! {
+    static ref RE_URL_SAFE: Regex =
+        Regex::new(r#"^[\p{L}\p{N}!@$()`.+,_"-]*$"#).unwrap();
+}
+
+#[derive(Serialize, Deserialize, Validate)]
+pub struct EditUser {
+    #[validate(length(min = 1, max = 39), regex(path = *RE_URL_SAFE))]
+    pub username: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[validate(length(min = 1, max = 64), regex(path = *RE_URL_SAFE))]
+    pub name: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[validate(length(max = 160))]
+    pub bio: Option<Option<String>>,
+    pub role: Option<Role>,
+    pub badges: Option<Badges>,
+}
+
+#[patch("{id}")]
+pub async fn user_edit(
+    req: HttpRequest,
+    info: web::Path<(String,)>,
+    new_user: web::Json<EditUser>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+    session_queue: web::Data<AuthQueue>,
+) -> Result<HttpResponse, ApiError> {
+    let new_user = new_user.into_inner();
+    // 返回 NoContent，所以不需要转换为 V2
+    v3::users::user_edit(
+        req,
+        info,
+        web::Json(v3::users::EditUser {
+            username: new_user.username,
+            bio: new_user.bio,
+            role: new_user.role,
+            badges: new_user.badges,
+            venmo_handle: None,
+        }),
+        pool,
+        redis,
+        session_queue,
+    )
+    .await
+    .or_else(v2_reroute::flatten_404_error)
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Extension {
+    pub ext: String,
+}
+
+#[patch("{id}/icon")]
+#[allow(clippy::too_many_arguments)]
+pub async fn user_icon_edit(
+    web::Query(ext): web::Query<Extension>,
+    req: HttpRequest,
+    info: web::Path<(String,)>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+    file_host: web::Data<Arc<dyn FileHost + Send + Sync>>,
+    payload: web::Payload,
+    session_queue: web::Data<AuthQueue>,
+) -> Result<HttpResponse, ApiError> {
+    // 返回 NoContent，所以不需要转换为 V2
+    v3::users::user_icon_edit(
+        web::Query(v3::users::Extension { ext: ext.ext }),
+        req,
+        info,
+        pool,
+        redis,
+        file_host,
+        payload,
+        session_queue,
+    )
+    .await
+    .or_else(v2_reroute::flatten_404_error)
+}
+
+#[delete("{id}")]
+pub async fn user_delete(
+    req: HttpRequest,
+    info: web::Path<(String,)>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+    session_queue: web::Data<AuthQueue>,
+) -> Result<HttpResponse, ApiError> {
+    // 返回 NoContent，所以不需要转换为 V2
+    v3::users::user_delete(req, info, pool, redis, session_queue)
+        .await
+        .or_else(v2_reroute::flatten_404_error)
+}
+
+#[get("{id}/follows")]
+pub async fn user_follows(
+    req: HttpRequest,
+    info: web::Path<(String,)>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+    session_queue: web::Data<AuthQueue>,
+) -> Result<HttpResponse, ApiError> {
+    let response = v3::users::user_follows(
+        req,
+        info,
+        pool.clone(),
+        redis.clone(),
+        session_queue,
+    )
+    .await
+    .or_else(v2_reroute::flatten_404_error)?;
+
+    // 将响应转换为 V2 格式
+    match v2_reroute::extract_ok_json::<Vec<Project>>(response).await {
+        Ok(project) => {
+            let legacy_projects =
+                LegacyProject::from_many(project, &**pool, &redis).await?;
+            Ok(HttpResponse::Ok().json(legacy_projects))
+        }
+        Err(response) => Ok(response),
+    }
+}
+
+/// 获取用户论坛内容
+///
+/// GET /v2/user/{user_id}/forum
+#[get("{user_id}/forum")]
+pub async fn user_forum_content(
+    info: web::Path<(String,)>,
+    query: web::Query<v3::users::UserForumQuery>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+) -> Result<HttpResponse, ApiError> {
+    // 直接调用 v3 实现，响应格式相同无需转换
+    v3::users::user_forum_content(info, query, pool, redis)
+        .await
+        .or_else(v2_reroute::flatten_404_error)
+}
+
+#[get("{id}/notifications")]
+pub async fn user_notifications(
+    req: HttpRequest,
+    info: web::Path<(String,)>,
+    pool: web::Data<PgPool>,
+    redis: web::Data<RedisPool>,
+    session_queue: web::Data<AuthQueue>,
+) -> Result<HttpResponse, ApiError> {
+    let response =
+        v3::users::user_notifications(req, info, pool, redis, session_queue)
+            .await
+            .or_else(v2_reroute::flatten_404_error)?;
+    //将响应转换为 V2 格式
+    match v2_reroute::extract_ok_json::<Vec<Notification>>(response).await {
+        Ok(notifications) => {
+            let legacy_notifications: Vec<LegacyNotification> = notifications
+                .into_iter()
+                .map(LegacyNotification::from)
+                .collect();
+            Ok(HttpResponse::Ok().json(legacy_notifications))
+        }
+        Err(response) => Ok(response),
+    }
+}

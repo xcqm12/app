@@ -1,0 +1,791 @@
+html {
+  @extend .dark-mode;
+  --dark-color-text: #b0bac5;
+  --dark-color-text-dark: #ecf9fb;
+  --color-text-secondary: var(--color-icon);
+
+  // Upstream fix #4760: 防止菜单打开时滚动条跳动
+  scrollbar-gutter: stable;
+}
+
+// ==========================================
+// BBSMC Flame Theme - Cosmic Obsidian Style
+// ==========================================
+:root {
+  // Flame Color Palette
+  --flame: #f16436;
+  --flame-light: #ff8a66;
+  --flame-dark: #c94d28;
+  --teal: #2dd4bf;
+  --amber: #ffb347;
+  --coral: #ff6b6b;
+  --violet: #8b5cf6;
+
+  // Typography - 使用国内可访问的系统字体
+  --font-display:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
+    "Helvetica Neue", sans-serif;
+  --font-body:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
+    "Helvetica Neue", sans-serif;
+  --font-mono:
+    "SF Mono", "Monaco", "Inconsolata", "Fira Mono", "Droid Sans Mono", "Source Code Pro", monospace;
+
+  // Easing
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+// TO BE MOVED TO OMORPHIA
+:root {
+  --gap-2: 0.125rem;
+  --gap-4: calc(2 * var(--gap-2));
+  --gap-6: calc(3 * var(--gap-2));
+  --gap-8: calc(2 * var(--gap-4));
+  --gap-12: calc(3 * var(--gap-4));
+  --gap-16: calc(2 * var(--gap-8));
+  --gap-24: calc(3 * var(--gap-8));
+
+  --radius-card: 0.5rem;
+  --radius-max: 999999999px;
+
+  --radius-btn: 0.75rem;
+  --radius-btn-large: 1rem;
+  --radius-btn-circle: var(--radius-max);
+
+  --text-14: 0.875rem;
+  --text-16: 1rem;
+  --text-18: 1.125rem;
+  --text-24: 1.5rem;
+  --text-32: 2rem;
+
+  --weight-normal: 500; // 用于一般正文
+  --weight-bold: 600; // 用于需要额外强调的文本
+  --weight-extrabold: 800; // 用于主标题和标题
+
+  --icon-14: 0.875rem; // 用于小容器内带标签的图标
+  --icon-16: 1rem; // 用于带标签的正常大小图标
+  --icon-20: 1.25rem; // 用于正常大小按钮中的图标
+  --icon-24: 1.5rem; // 用于作为主要标签或大按钮中的图标
+  --icon-32: 2rem;
+}
+
+.experimental-styles-within {
+  // Reset deprecated properties
+  --color-icon: initial !important;
+  --color-text: initial !important;
+  --color-text-inactive: initial !important;
+  --color-text-dark: initial !important;
+  --color-heading: initial !important;
+  --color-divider: initial !important;
+  --color-divider-dark: initial !important;
+  --color-text-inverted: initial !important;
+  --color-bg-inverted: initial !important;
+
+  --color-brand: var(--color-gray) !important; //定义品牌的主要颜色, 用于强调
+  --color-brand-inverted: initial !important;
+
+  --tab-underline-hovered: initial !important;
+
+  --color-button-text: initial !important;
+  --color-button-bg-hover: initial !important;
+  --color-button-text-hover: initial !important;
+  --color-button-bg-active: initial !important;
+  --color-button-text-active: initial !important;
+
+  --color-grey-link: inherit !important;
+  --color-grey-link-hover: inherit !important; // DEPRECATED, use filters in future
+  --color-grey-link-active: inherit !important; // DEPRECATED, use filters in future
+  --color-link: var(--color-blue) !important;
+  --color-link-hover: var(--color-blue) !important; // DEPRECATED, use filters in future
+  --color-link-active: var(--color-blue) !important; // DEPRECATED, use filters in future
+}
+
+.light-mode,
+.light {
+  // Flame accent colors for light mode
+  --accent: var(--flame);
+  --accent-hover: var(--flame-dark);
+  --accent-muted: rgba(241, 100, 54, 0.08);
+  --accent-glow: rgba(241, 100, 54, 0.25);
+
+  // Elevated backgrounds for light mode
+  --bg-deep: #f8f6f4;
+  --bg-base: #f5f3f1;
+  --bg-elevated: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #fafafa;
+  --bg-surface: #fefefe;
+  --bg-input: #f5f5f5;
+
+  .experimental-styles-within,
+  &.experimental-styles-within {
+    --color-bg: #f5f3f1;
+    --color-raised-bg: #ffffff;
+    --color-button-bg: #f0eeec;
+    --color-base: #2c2e31;
+    --color-secondary: #64605a;
+    --color-accent-contrast: #ffffff;
+
+    --color-platform-fabric: #8a7b71;
+    --color-platform-quilt: #8b61b4;
+    --color-platform-forge: #5b6197;
+    --color-platform-neoforge: #dc895c;
+    --color-platform-liteloader: #4c90de;
+    --color-platform-windows: #0078d4;
+    --color-platform-macos: #333333;
+    --color-platform-linux: #e95420;
+    --color-platform-bukkit: #e78362;
+    --color-platform-bungeecord: #c69e39;
+    --color-platform-folia: #6aa54f;
+    --color-platform-paper: #e67e7e;
+    --color-platform-purpur: #7763a3;
+    --color-platform-spigot: #cd7a21;
+    --color-platform-velocity: #4b98b0;
+    --color-platform-waterfall: #5f83cb;
+    --color-platform-sponge: #c49528;
+
+    --color-button-border: rgba(161, 161, 161, 0.35);
+  }
+}
+
+.dark-mode,
+.dark {
+  .experimental-styles-within,
+  &.experimental-styles-within {
+    --color-button-bg: #33363d;
+
+    --color-platform-fabric: #dbb69b;
+    --color-platform-quilt: #c796f9;
+    --color-platform-forge: #959eef;
+    --color-platform-neoforge: #f99e6b;
+    --color-platform-liteloader: #7ab0ee;
+    --color-platform-bukkit: #f6af7b;
+    --color-platform-bungeecord: #d2c080;
+    --color-platform-folia: #a5e388;
+    --color-platform-paper: #eeaaaa;
+    --color-platform-purpur: #c3abf7;
+    --color-platform-spigot: #f1cc84;
+    --color-platform-velocity: #83d5ef;
+    --color-platform-waterfall: #78a4fb;
+    --color-platform-sponge: #f9e580;
+
+    --color-button-border: rgba(193, 190, 209, 0.12);
+  }
+}
+
+.light-mode {
+  --color-secondary: #78716c;
+  --color-icon: var(--color-secondary);
+  --color-text: #44403c;
+  --color-text-inactive: #a8a29e;
+  --color-text-dark: #1c1917;
+  --color-heading: #1c1917;
+  --color-bg: #f5f3f1;
+  --color-raised-bg: #ffffff;
+  --color-divider: rgba(0, 0, 0, 0.08);
+  --color-divider-dark: rgba(0, 0, 0, 0.15);
+
+  // Light mode background gradients
+  body::before {
+    background:
+      radial-gradient(ellipse 50% 40% at 60% 0%, rgba(241, 100, 54, 0.08) 0%, transparent 70%),
+      radial-gradient(ellipse 30% 50% at 15% 20%, rgba(241, 100, 54, 0.05) 0%, transparent 60%),
+      radial-gradient(ellipse 40% 40% at 95% 90%, rgba(45, 212, 191, 0.04) 0%, transparent 50%);
+  }
+
+  body::after {
+    background-image:
+      linear-gradient(rgba(0, 0, 0, 0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 0, 0, 0.02) 1px, transparent 1px);
+    background-size: 80px 80px;
+    mask-image: radial-gradient(ellipse 60% 50% at 50% 30%, rgba(0, 0, 0, 0.3) 0%, transparent 70%);
+    -webkit-mask-image: radial-gradient(
+      ellipse 60% 50% at 50% 30%,
+      rgba(0, 0, 0, 0.3) 0%,
+      transparent 70%
+    );
+  }
+
+  --color-text-inverted: var(--color-bg);
+  --color-bg-inverted: var(--color-text);
+
+  --color-brand: var(--color-green);
+  --color-brand-highlight: rgba(0, 175, 92, 0.25);
+  --color-brand-shadow: rgba(0, 175, 92, 0.7);
+  --color-brand-inverted: #ffffff;
+
+  --tab-underline-hovered: #e2e8f0;
+
+  --color-button-bg: hsl(220, 13%, 91%);
+  --color-button-text: var(--color-text-dark);
+  --color-button-bg-hover: #d9dce0;
+  --color-button-text-hover: #1b1e24;
+  --color-button-bg-active: #c3c6cb;
+  --color-button-text-active: var(--color-button-text-hover);
+
+  --color-toggle-handle: var(--color-icon);
+
+  --color-dropdown-bg: var(--color-button-bg);
+  --color-dropdown-text: var(--color-button-text);
+
+  --color-tooltip-bg: var(--color-text);
+  --color-tooltip-text: var(--color-bg);
+
+  --color-code-bg: var(--color-bg);
+  --color-code-text: var(--color-text-dark);
+
+  --color-kbd-shadow: rgba(0, 0, 0, 0.25);
+
+  --color-ad: #d6e6f9;
+  --color-ad-raised: #b1c8e4;
+  --color-ad-contrast: var(--color-text);
+  --color-ad-highlight: #088cdb;
+
+  --color-grey-link: var(--color-text);
+  --color-grey-link-hover: var(--color-heading);
+  --color-grey-link-active: var(--color-text-dark);
+  --color-link: #0d60bb;
+  --color-link-hover: #1a76e7;
+  --color-link-active: #146fd7;
+
+  --color-red-bg: rgba(203, 34, 69, 0.1);
+  --color-orange-bg: rgba(224, 131, 37, 0.1);
+  --color-green-bg: rgba(0, 175, 92, 0.1);
+  --color-blue-bg: rgba(31, 104, 192, 0.1);
+  --color-purple-bg: rgba(142, 50, 243, 0.1);
+
+  --color-warning-bg: hsl(355, 70%, 88%);
+  --color-warning-text: hsl(342, 70%, 35%);
+
+  --color-warning-banner-text: hsl(0, 11%, 16%);
+  --color-warning-banner-bg: hsl(0, 100%, 95%);
+  --color-warning-banner-side: hsl(357, 78%, 40%);
+
+  --color-info-banner-text: var(--color-text);
+  --color-info-banner-bg: var(--color-ad);
+  --color-info-banner-side: var(--color-blue);
+
+  --color-block-quote: var(--color-tooltip-bg);
+  --color-header-underline: var(--color-divider-dark);
+  --color-hr: var(--color-text);
+
+  --color-table-border: #dfe2e5;
+  --color-table-alternate-row: #f2f4f7;
+
+  --shadow-inset-lg: inset 0px -2px 2px hsla(221, 39%, 11%, 0.1);
+  --shadow-inset: inset 0px -2px 2px hsla(221, 39%, 11%, 0.05);
+  --shadow-inset-sm: inset 0px -1px 2px hsla(221, 39%, 11%, 0.15);
+
+  --shadow-raised-lg: 0px 2px 4px hsla(221, 39%, 11%, 0.2);
+  --shadow-raised:
+    0.3px 0.5px 0.6px hsl(var(--shadow-color) / 0.15),
+    1px 2px 2.2px -1.7px hsl(var(--shadow-color) / 0.12),
+    4.4px 8.8px 9.7px -3.4px hsl(var(--shadow-color) / 0.09);
+  --shadow-floating:
+    hsla(0, 0%, 0%, 0) 0px 0px 0px 0px, hsla(0, 0%, 0%, 0) 0px 0px 0px 0px,
+    hsla(0, 0%, 0%, 0.1) 0px 4px 6px -1px, hsla(0, 0%, 0%, 0.1) 0px 2px 4px -1px;
+
+  --shadow-card: rgba(50, 50, 100, 0.1) 0px 2px 4px 0px;
+
+  --landing-maze-bg: url("https://cdn.modrinth.com/landing-new/landing-light.webp");
+  --landing-maze-gradient-bg: url("https://cdn.modrinth.com/landing-new/landing-lower-light.webp");
+  --landing-maze-outer-bg: linear-gradient(180deg, #f0f0f0 0%, #ffffff 100%);
+
+  --landing-color-heading: #000;
+  --landing-color-subheading: #3a3f45;
+
+  --landing-transition-gradient-start: rgba(255, 255, 255, 0);
+  --landing-transition-gradient-end: #ffffff;
+  --landing-hover-card-gradient: radial-gradient(
+    50% 50% at 50% 50%,
+    #fff 0%,
+    rgba(204, 204, 204, 0.77) 100%
+  );
+  --landing-border-gradient: linear-gradient(
+    to bottom right,
+    rgba(129, 137, 175, 0.75) 0%,
+    rgba(66, 71, 97, 0.34) 100%
+  );
+  --landing-border-color: rgba(129, 137, 175, 0.55);
+  --landing-creator-gradient: linear-gradient(180deg, #f8f8f8 0%, #f8f8f8 63.19%);
+
+  --landing-blob-gradient: radial-gradient(
+    50% 50% at 50% 50%,
+    rgba(255, 255, 255, 0.35) 0%,
+    rgba(255, 255, 255, 0.2695) 100%
+  );
+  --landing-blob-shadow:
+    2px 2px 12px rgba(0, 0, 0, 0.16), inset 2px 2px 64px rgba(255, 255, 255, 0.45);
+
+  --landing-card-bg: rgba(255, 255, 255, 0.8);
+  --landing-card-shadow: 2px 2px 12px rgba(0, 0, 0, 0.16);
+
+  --landing-blue-label: #0098ba;
+  --landing-blue-label-bg: rgba(0, 177, 216, 0.15);
+  --landing-green-label: #00a936;
+  --landing-green-label-bg: rgba(0, 216, 69, 0.15);
+
+  --landing-raw-bg: #fff;
+}
+
+.dark,
+.dark-mode,
+.oled-mode,
+.retro-mode {
+  --color-secondary: #a8a29e;
+  --color-icon: var(--color-secondary);
+  --color-text: var(--dark-color-text);
+  --color-text-inactive: #78716c;
+  --color-text-dark: #faf8f5;
+  --color-heading: #faf8f5;
+  --color-bg: #0c0e12;
+  --color-raised-bg: #181c22;
+  --color-divider: rgba(255, 255, 255, 0.08);
+  --color-divider-dark: rgba(255, 255, 255, 0.15);
+
+  // Flame accent colors for dark mode
+  --accent: var(--flame);
+  --accent-hover: var(--flame-light);
+  --accent-muted: rgba(241, 100, 54, 0.12);
+  --accent-glow: rgba(241, 100, 54, 0.4);
+
+  // Elevated backgrounds
+  --bg-deep: #06080a;
+  --bg-base: #0c0e12;
+  --bg-elevated: #12151a;
+  --bg-card: #181c22;
+  --bg-card-hover: #1e2229;
+  --bg-surface: #101318;
+  --bg-input: #14171c;
+
+  // Dark mode background gradients
+  body::before {
+    background:
+      radial-gradient(ellipse 50% 40% at 60% 0%, rgba(241, 100, 54, 0.15) 0%, transparent 70%),
+      radial-gradient(ellipse 30% 50% at 15% 20%, rgba(241, 100, 54, 0.08) 0%, transparent 60%),
+      radial-gradient(ellipse 40% 40% at 5% 95%, rgba(45, 212, 191, 0.06) 0%, transparent 50%);
+  }
+
+  body::after {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+    background-size: 100px 100px;
+    mask-image: radial-gradient(ellipse 60% 50% at 50% 30%, rgba(0, 0, 0, 0.5) 0%, transparent 70%);
+    -webkit-mask-image: radial-gradient(
+      ellipse 60% 50% at 50% 30%,
+      rgba(0, 0, 0, 0.5) 0%,
+      transparent 70%
+    );
+  }
+
+  --color-text-inverted: var(--color-bg);
+  --color-bg-inverted: var(--color-text);
+
+  --color-red-bg: rgba(255, 73, 110, 0.2);
+  --color-orange-bg: rgba(255, 163, 71, 0.2);
+  --color-green-bg: rgba(27, 217, 106, 0.2);
+  --color-blue-bg: rgba(79, 156, 255, 0.2);
+  --color-purple-bg: rgba(199, 138, 255, 0.2);
+
+  --color-brand: var(--color-gray);
+  --color-brand-highlight: rgba(255, 255, 255, 0.1);
+  --color-brand-shadow: rgba(5, 5, 5, 0.25);
+  --color-brand-inverted: #000;
+
+  --tab-underline-hovered: #414146;
+
+  --color-button-bg: rgba(51, 54, 61, 0.2);
+  --color-button-text: var(--color-text);
+  --color-button-bg-hover: #2d2d32;
+  --color-button-text-hover: #ffffff;
+  --color-button-bg-active: #3c3c40;
+  --color-button-text-active: var(--color-button-text-hover);
+
+  --color-toggle-handle: var(--color-button-text);
+
+  --color-dropdown-bg: var(--color-button-bg);
+  --color-dropdown-text: var(--color-button-text);
+
+  --color-tooltip-bg: var(--color-button-bg);
+  --color-tooltip-text: var(--color-text);
+
+  --color-code-bg: var(--color-button-bg);
+  --color-code-text: var(--color-text-dark);
+
+  --color-kbd-shadow: rgba(0, 0, 0, 0.35);
+
+  --color-ad: #0d1828;
+  --color-ad-raised: #2e4057;
+  --color-ad-contrast: var(--color-text);
+  --color-ad-highlight: #088cdb;
+
+  --color-link: #74b6f3;
+  --color-link-hover: #92c0f5;
+  --color-link-active: #b5d5fd;
+
+  --color-warning-banner-bg: hsl(0, 45%, 11%);
+  --color-warning-banner-text: hsl(0, 100%, 96%);
+  --color-warning-banner-side: hsl(357, 78%, 40%);
+
+  --color-info-banner-text: var(--color-text);
+  --color-info-banner-bg: var(--color-ad);
+  --color-info-banner-side: var(--color-blue);
+
+  --color-block-quote: var(--color-code-bg);
+  --color-header-underline: var(--color-divider-dark);
+  --color-hr: var(--color-text);
+
+  --color-table-border: #4f5864;
+  --color-table-alternate-row: #19191c;
+
+  --shadow-inset-lg: inset 0px -2px 2px hsla(221, 39%, 11%, 0.1);
+  --shadow-inset: inset 0px -2px 2px hsla(221, 39%, 11%, 0.05);
+  --shadow-inset-sm: inset 0px -1px 1px hsla(221, 39%, 11%, 0.25);
+
+  --shadow-raised-lg: 0px 2px 4px hsla(221, 39%, 11%, 0.2);
+  --shadow-raised: 0px -2px 4px hsla(221, 39%, 11%, 0.1);
+  --shadow-floating:
+    hsla(0, 0%, 0%, 0) 0px 0px 0px 0px, hsla(0, 0%, 0%, 0) 0px 0px 0px 0px,
+    hsla(0, 0%, 0%, 0.1) 0px 4px 6px -1px, rgba(0, 0, 0, 0.06) 0px 2px 4px -1px;
+
+  --shadow-card: rgba(0, 0, 0, 0.25) 0px 2px 4px 0px;
+
+  .experimental-styles-within,
+  &.experimental-styles-within {
+    --color-button-bg: #1e2024;
+
+    --color-platform-fabric: #dbb69b;
+    --color-platform-quilt: #c796f9;
+    --color-platform-forge: #959eef;
+    --color-platform-neoforge: #f99e6b;
+    --color-platform-liteloader: #7ab0ee;
+    --color-platform-windows: #ffffff;
+    --color-platform-macos: #ffffff;
+    --color-platform-linux: #ffffff;
+    --color-platform-bukkit: #f6af7b;
+    --color-platform-bungeecord: #d2c080;
+    --color-platform-folia: #a5e388;
+    --color-platform-paper: #eeaaaa;
+    --color-platform-purpur: #c3abf7;
+    --color-platform-spigot: #f1cc84;
+    --color-platform-velocity: #83d5ef;
+    --color-platform-waterfall: #78a4fb;
+    --color-platform-sponge: #f9e580;
+
+    --color-button-border: rgba(193, 190, 209, 0.12);
+  }
+
+  --color-red: rgb(255, 73, 110);
+  --color-orange: rgb(255, 163, 71);
+  --color-green: rgb(27, 217, 106);
+  --color-blue: rgb(79, 156, 255);
+  --color-white: rgb(255, 255, 255);
+  --color-purple: rgb(199, 138, 255);
+  --color-gray: rgb(113, 128, 150);
+
+  --color-red-highlight: rgba(255, 73, 110, 0.25);
+  --color-orange-highlight: rgba(255, 163, 71, 0.25);
+  --color-green-highlight: rgba(27, 217, 106, 0.25);
+  --color-blue-highlight: rgba(79, 156, 255, 0.25);
+  --color-purple-highlight: rgba(199, 138, 255, 0.25);
+  --color-gray-highlight: rgba(113, 128, 150, 0.25);
+
+  --hover-filter: brightness(120%);
+  --active-filter: brightness(140%);
+
+  --landing-maze-bg: url("https://cdn.bbsmc.org.cn/raw/landing-new/landing.webp");
+  --landing-maze-gradient-bg:
+    linear-gradient(0deg, #31375f 0%, rgba(8, 14, 55, 0) 100%),
+    url("https://cdn.bbsmc.org.cn/raw/landing-new/landing-lower.webp");
+  --landing-maze-outer-bg: linear-gradient(180deg, #06060d 0%, #0d1828 100%);
+
+  --landing-color-heading: #fff;
+  --landing-color-subheading: #afb6be;
+
+  --landing-transition-gradient-start: rgba(14, 16, 32, 0);
+  --landing-transition-gradient-end: #060a1c;
+  --landing-hover-card-gradient: radial-gradient(
+    50% 50% at 50% 50%,
+    #2c304f 0%,
+    rgba(32, 35, 50, 0.77) 100%
+  );
+  --landing-border-gradient: linear-gradient(
+    to bottom right,
+    rgba(168, 177, 221, 0.75) 0%,
+    rgba(168, 177, 221, 0.18) 100%
+  );
+  --landing-border-color: rgba(168, 177, 221, 0.55);
+  --landing-creator-gradient: linear-gradient(180deg, #0d1828 0%, #0d1828 100%);
+
+  --landing-blob-gradient: radial-gradient(
+    50% 50% at 50% 50%,
+    rgba(44, 48, 79, 0.35) 0%,
+    rgba(32, 35, 50, 0.2695) 100%
+  );
+  --landing-blob-shadow:
+    2px 2px 12px rgba(0, 0, 0, 0.16), inset 2px 2px 64px rgba(57, 61, 94, 0.45);
+
+  --landing-card-bg: rgba(59, 63, 85, 0.15);
+  --landing-card-shadow: 2px 2px 12px rgba(0, 0, 0, 0.16);
+
+  --landing-white-label: #ffffff;
+  --landing-blue-label: #10c0e7;
+  --landing-blue-label-bg: rgba(0, 177, 216, 0.15);
+  --landing-green-label: rgba(76, 255, 0, 0.25);
+  --landing-green-label-bg: rgba(0, 216, 69, 0.15);
+
+  --landing-raw-bg: #000;
+
+  --color-warning-bg: hsl(355, 70%, 20%);
+  --color-warning-text: hsl(342, 70%, 75%);
+}
+
+.retro-mode {
+  --color-bg: #191917;
+  --color-raised-bg: #1d1e1b;
+  --color-button-bg: #3a3b38;
+  --color-base: #c3c4b3;
+  --color-secondary: #777a74;
+  --color-contrast: #e6e2d1;
+
+  --color-brand: #4d9227;
+  --color-brand-highlight: #25421e;
+  --color-ad: var(--color-brand-highlight);
+  --color-ad-raised: var(--color-brand);
+  --color-ad-contrast: black;
+  --color-ad-highlight: var(--color-brand);
+
+  --color-red: rgb(232, 32, 13);
+  --color-orange: rgb(232, 141, 13);
+  --color-green: rgb(60, 219, 54);
+  --color-blue: rgb(9, 159, 239);
+  --color-white: rgb(255, 255, 255);
+  --color-purple: rgb(139, 129, 230);
+  --color-gray: rgb(71, 80, 96);
+
+  --color-red-highlight: rgba(232, 32, 13, 0.25);
+  --color-orange-highlight: rgba(232, 141, 13, 0.25);
+  --color-green-highlight: rgba(60, 219, 54, 0.25);
+  --color-blue-highlight: rgba(9, 159, 239, 0.25);
+  --color-purple-highlight: rgba(139, 129, 230, 0.25);
+  --color-gray-highlight: rgba(113, 128, 150, 0.25);
+}
+
+body {
+  // Defaults
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  --font-standard:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", Inter,
+    "Helvetica Neue", Roboto, sans-serif;
+  --mono-font:
+    "SF Mono", Monaco, Inconsolata, "Fira Mono", "Droid Sans Mono", "Source Code Pro", ui-monospace,
+    monospace;
+  font-family: var(--font-standard);
+  font-size: 15px;
+  font-weight: var(--font-weight-regular);
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+
+  // Layered background gradient - adapts to theme
+  &::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -2;
+  }
+
+  // Grid pattern overlay
+  &::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  // Rounding sizes
+  --size-rounded-xs: 0.5rem;
+  --size-rounded-sm: 0.5rem;
+  --size-rounded-md: 0.5rem;
+  --size-rounded-lg: 0.5rem;
+
+  --size-rounded-max: 999999999px;
+  --size-rounded-card: 0.5rem;
+  --size-rounded-icon: 0.5rem;
+  --size-rounded-control: 0.5rem;
+  --size-rounded-tooltip: 0.5rem;
+
+  --size-navbar-height: 3.5rem;
+  --size-mobile-navbar-height: 3.5rem;
+  --size-mobile-navbar-height-expanded: 13.75rem;
+
+  --spacing-card-lg: 1.5rem;
+  --spacing-card-bg: 1rem;
+  --spacing-card-md: 0.75rem;
+  --spacing-card-sm: 0.5rem;
+  --spacing-card-xs: 0.25rem;
+
+  // Font Sizes
+  --font-size-xxs: 0.625rem; //10px
+  --font-size-xs: 0.75rem; //12px
+  --font-size-sm: 0.875rem; //14px
+  --font-size-nm: 1rem; //16px
+  --font-size-md: 1.125rem; //18px
+  --font-size-lg: 1.25rem; //20px
+  --font-size-xl: 1.5rem; //24px
+  --font-size-2xl: 2rem; //32px
+  --font-size-3xl: 3rem; //48px
+
+  // Font Weights
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+  --font-weight-extrabold: 800;
+
+  --font-weight-text: var(--font-weight-medium);
+  --font-weight-heading: var(--font-weight-extrabold);
+  --font-weight-title: var(--font-weight-extrabold);
+
+  @media screen and (min-width: 320px) {
+    --size-mobile-navbar-height-expanded: 11.5rem;
+  }
+
+  @media screen and (min-width: 432px) {
+    --size-mobile-navbar-height-expanded: 9.25rem;
+  }
+
+  @media screen and (min-width: 765px) {
+    --size-mobile-navbar-height-expanded: 7rem;
+  }
+}
+
+svg {
+  height: 1em;
+  width: 1em;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+h1 {
+  color: var(--color-text-dark);
+}
+
+h2 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  color: var(--color-text-dark);
+}
+
+h3 {
+  margin-block: var(--spacing-card-md) var(--spacing-card-sm);
+  color: var(--color-text-dark);
+}
+
+input {
+  border-radius: var(--size-rounded-sm);
+  box-sizing: border-box;
+  border: 2px solid transparent;
+  // safari iOS rounds inputs by default
+  // set the appearance to none to prevent this
+  appearance: none !important;
+}
+
+pre {
+  font-weight: var(--font-weight-regular);
+}
+
+input,
+textarea {
+  background: var(--color-button-bg);
+  color: var(--color-text);
+  padding: 0.5rem 1rem;
+  font-weight: var(--font-weight-medium);
+  border: none;
+  outline: 2px solid transparent;
+  box-shadow:
+    var(--shadow-inset-sm),
+    0 0 0 0 transparent;
+  transition: box-shadow 0.1s ease-in-out;
+  min-height: 40px;
+
+  &:focus,
+  &:focus-visible {
+    box-shadow:
+      inset 0 0 0 transparent,
+      0 0 0 0.25rem var(--color-brand-shadow);
+    color: var(--color-button-text-active);
+  }
+
+  &:disabled,
+  &[disabled="true"] {
+    opacity: 0.6;
+    pointer-events: none;
+    cursor: not-allowed;
+  }
+
+  &:focus::placeholder {
+    opacity: 0.8;
+  }
+
+  &::placeholder {
+    color: var(--color-button-text);
+    opacity: 0.6;
+  }
+}
+
+button,
+input[type="button"] {
+  cursor: pointer;
+  border: none;
+  outline: 2px solid transparent;
+}
+
+kbd {
+  background-color: var(--color-code-bg);
+  color: var(--color-code-text);
+  box-shadow: 0 2px 1px var(--color-kbd-shadow);
+  padding: 0.2em 0.5em 0.1em;
+  border-radius: 3px;
+  line-height: 1;
+  font-size: 0.85em !important;
+}
+
+@import "~/assets/styles/layout.scss";
+@import "~/assets/styles/utils.scss";
+@import "~/assets/styles/components.scss";
+button:focus-visible,
+a:focus-visible,
+[tabindex="0"]:focus-visible {
+  outline: 0.25rem solid #ea80ff;
+  border-radius: 0.25rem;
+}
+
+// OMORPHIA FIXES
+.card {
+  outline-offset: -2px;
+}
+
+input {
+  outline: 2px solid transparent !important;
+}
+
+.button-animation {
+  transition:
+    opacity 0.5s ease-in-out,
+    filter 0.2s ease-in-out,
+    transform 0.05s ease-in-out,
+    outline-width 0.2s ease-in-out;
+}
+
+.button-transparent {
+  box-shadow: none;
+}

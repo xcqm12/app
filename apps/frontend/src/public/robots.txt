@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard/
+Disallow: /settings/
+Disallow: /moderation/
+Disallow: /auth/
+Disallow: /report
+Disallow: /flags

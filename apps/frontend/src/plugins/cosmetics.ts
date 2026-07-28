@@ -1,0 +1,66 @@
+import type { DarkTheme } from "./theme/index.ts";
+
+export type DisplayMode = "list" | "gallery" | "grid";
+
+export type DisplayLocation =
+  | "mod"
+  | "plugin"
+  | "resourcepack"
+  | "modpack"
+  | "shader"
+  | "datapack"
+  | "software"
+  | "language"
+  | "map"
+  | "user"
+  | "collection";
+
+export interface Cosmetics {
+  rightSearchLayout: boolean;
+  leftContentLayout: boolean;
+  advancedRendering: boolean;
+  externalLinksNewTab: boolean;
+  notUsingBlockers: boolean;
+  hideModrinthAppPromos: boolean;
+  preferredDarkTheme: DarkTheme;
+  searchDisplayMode: Record<DisplayLocation, DisplayMode>;
+  hideStagingBanner: boolean;
+}
+
+export default defineNuxtPlugin({
+  name: "cosmetics",
+  setup() {
+    const cosmetics = useCookie<Cosmetics>("cosmetics", {
+      maxAge: 60 * 60 * 24 * 365 * 10,
+      sameSite: "lax",
+      secure: true,
+      httpOnly: false,
+      path: "/",
+      default: () => ({
+        rightSearchLayout: false,
+        leftContentLayout: false,
+        advancedRendering: true,
+        externalLinksNewTab: true,
+        notUsingBlockers: false,
+        hideModrinthAppPromos: false,
+        preferredDarkTheme: "oled",
+        searchDisplayMode: {
+          mod: "list",
+          plugin: "list",
+          resourcepack: "gallery",
+          modpack: "gallery",
+          shader: "gallery",
+          datapack: "list",
+          software: "gallery",
+          language: "gallery",
+          map: "gallery",
+          user: "list",
+          collection: "list",
+        },
+        hideStagingBanner: false,
+      }),
+    });
+
+    return { provide: { cosmetics } };
+  },
+});

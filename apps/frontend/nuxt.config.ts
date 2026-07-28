@@ -1,0 +1,548 @@
+import { promises as fs } from "fs";
+import { pathToFileURL } from "node:url";
+import svgLoader from "vite-svg-loader";
+import { resolve, basename, relative } from "pathe";
+import { defineNuxtConfig } from "nuxt/config";
+import { $fetch } from "ofetch";
+import { globIterate } from "glob";
+import { match as matchLocale } from "@formatjs/intl-localematcher";
+import { consola } from "consola";
+
+const STAGING_API_URL = "http://api.bbsmc.org.cn/v2/";
+
+const preloadedFonts = [
+  "inter/Inter-Regular.woff2",
+  "inter/Inter-Medium.woff2",
+  "inter/Inter-SemiBold.woff2",
+  "inter/Inter-Bold.woff2",
+];
+
+const favicons = {
+  "(prefers-color-scheme:no-preference)": "/favicon-light.ico",
+  "(prefers-color-scheme:light)": "/favicon-light.ico",
+  "(prefers-color-scheme:dark)": "/favicon.ico",
+};
+
+/**
+ * Tags of locales that are auto-discovered besides the default locale.
+ *
+ * Preferably only the locales that reach a certain threshold of complete
+ * translations would be included in this array.
+ */
+const enabledLocales: string[] = [];
+
+/**
+ * Overrides for the categories of the certain locales.
+ */
+const localesCategoriesOverrides: Partial<Record<string, "fun" | "experimental">> = {
+  "en-x-pirate": "fun",
+  "en-x-updown": "fun",
+  "en-x-lolcat": "fun",
+  "en-x-uwu": "fun",
+  "ru-x-bandit": "fun",
+  ar: "experimental",
+  he: "experimental",
+  pes: "experimental",
+};
+
+export default defineNuxtConfig({
+  srcDir: "src/",
+  app: {
+    head: {
+      charset: "utf-8",
+      htmlAttrs: {
+        lang: "zh-CN",
+      },
+      title: "BBSMC 我的世界资源社区",
+      script: [
+        {
+          src: "https://hm.baidu.com/hm.js?f5137aff8af02e0688d2485989441979",
+          async: true,
+        },
+        {
+          children: `(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i+"?ref=bwt";y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);})(window, document, "clarity", "script", "vfqf1ute5s");`,
+        },
+        {
+          src: "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2727958509575372",
+          async: true,
+          crossorigin: "anonymous",
+        },
+      ],
+      link: [
+        // The type is necessary because the linter can't always compare this very nested/complex type on itself
+        ...preloadedFonts.map((font): object => {
+          return {
+            rel: "preload",
+            href: `https://cdn.bbsmc.org.cn/raw/fonts/${font}`,
+            as: "font",
+            type: "font/woff2",
+            crossorigin: "anonymous",
+          };
+        }),
+        ...Object.entries(favicons).map(([media, href]): object => {
+          return { rel: "icon", type: "image/x-icon", href, media };
+        }),
+        ...Object.entries(favicons).map(([media, href]): object => {
+          return { rel: "apple-touch-icon", type: "image/x-icon", href, media, sizes: "64x64" };
+        }),
+        {
+          rel: "search",
+          type: "application/opensearchdescription+xml",
+          href: "/opensearch.xml",
+          title: "BBSMC 模组",
+        },
+      ],
+    },
+  },
+  vite: {
+    css: {
+      preprocessorOptions: {
+        scss: {
+          api: "modern-compiler",
+          silenceDeprecations: ["legacy-js-api", "import", "global-builtin"],
+        },
+      },
+    },
+    define: {
+      global: {},
+    },
+    esbuild: {
+      define: {
+        global: "globalThis",
+      },
+    },
+    cacheDir: "../../node_modules/.vite/apps/knossos",
+    resolve: {
+      dedupe: ["vue"],
+    },
+    plugins: [
+      svgLoader({
+        svgoConfig: {
+          plugins: [
+            {
+              name: "preset-default",
+              params: {
+                overrides: {
+                  removeViewBox: false,
+                },
+              },
+            },
+          ],
+        },
+      }),
+    ],
+  },
+  hooks: {
+    async "build:before"() {
+      // 如果设置了 SKIP_BUILD_PREPARE 环境变量, 跳过 API 预取
+      // 用于后端未就绪时的构建场景
+      if (process.env.SKIP_BUILD_PREPARE === "1") {
+        consola.info("[build:before] SKIP_BUILD_PREPARE=1, 使用默认数据继续构建");
+        await fs.mkdir("./src/generated", { recursive: true });
+        const defaultState = {
+          lastGenerated: new Date().toISOString(),
+          apiUrl: getApiUrl(),
+          categories: [],
+          loaders: [],
+          gameVersions: [],
+          donationPlatforms: [],
+          reportTypes: [],
+          homePageSearch: [],
+          homePageNotifs: [],
+        };
+        await fs.writeFile("./src/generated/state.json", JSON.stringify(defaultState));
+        return;
+      }
+
+      // 30 minutes
+      const TTL = 30 * 60 * 1000;
+
+      let state: {
+        lastGenerated?: string;
+        apiUrl?: string;
+        categories?: any[];
+        loaders?: any[];
+        gameVersions?: any[];
+        donationPlatforms?: any[];
+        reportTypes?: any[];
+        homePageProjects?: any[];
+        homePageSearch?: any[];
+        homePageNotifs?: any[];
+        products?: any[];
+      } = {};
+
+      try {
+        state = JSON.parse(await fs.readFile("./src/generated/state.json", "utf8"));
+      } catch {
+        // File doesn't exist, create folder
+        await fs.mkdir("./src/generated", { recursive: true });
+      }
+
+      const API_URL = getApiUrl();
+
+      if (
+        // Skip regeneration if within TTL...
+        state.lastGenerated &&
+        new Date(state.lastGenerated).getTime() + TTL > new Date().getTime() &&
+        // ...but only if the API URL is the same
+        state.apiUrl === API_URL &&
+        // ...and the data is actually valid (not from a failed attempt)
+        state.categories?.length > 0
+      ) {
+        return;
+      }
+
+      const headers = {
+        headers: {
+          "user-agent": "Knossos generator (support@bbsmc.org.cn)",
+        },
+      };
+
+      try {
+        const [
+          categories,
+          loaders,
+          gameVersions,
+          donationPlatforms,
+          reportTypes,
+          homePageSearch,
+          homePageNotifs,
+        ] = await Promise.all([
+          $fetch(`${API_URL}tag/category`, headers, { timeout: 5000 }),
+          $fetch(`${API_URL}tag/loader`, headers, { timeout: 5000 }),
+          $fetch(`${API_URL}tag/game_version`, headers, { timeout: 5000 }),
+          $fetch(`${API_URL}tag/donation_platform`, headers, { timeout: 5000 }),
+          $fetch(`${API_URL}tag/report_type`, headers, { timeout: 5000 }),
+          $fetch(`${API_URL}search?limit=3&query=&index=relevance`, headers, { timeout: 5000 }),
+          $fetch(`${API_URL}search?limit=3&query=&index=updated`, headers, { timeout: 5000 }),
+        ]);
+
+        state.lastGenerated = new Date().toISOString();
+        state.apiUrl = API_URL;
+        state.categories = categories;
+        state.loaders = loaders;
+        state.gameVersions = gameVersions;
+        state.donationPlatforms = donationPlatforms;
+        state.reportTypes = reportTypes;
+        state.homePageSearch = homePageSearch;
+        state.homePageNotifs = homePageNotifs;
+
+        await fs.writeFile("./src/generated/state.json", JSON.stringify(state));
+
+        console.log("Tags 已生成!");
+      } catch (err) {
+        consola.warn(
+          `[build:before] API 请求失败 (${API_URL}), 使用缓存数据继续构建:`,
+          String(err),
+        );
+        // 确保 state.json 存在 (即使是空数据), 否则 Vite 构建时 import 会失败
+        if (!state.categories || state.categories.length === 0) {
+          const fallbackState = {
+            lastGenerated: new Date().toISOString(),
+            apiUrl: API_URL,
+            categories: [],
+            loaders: [],
+            gameVersions: [],
+            donationPlatforms: [],
+            reportTypes: [],
+            homePageSearch: [],
+            homePageNotifs: [],
+          };
+          await fs.writeFile("./src/generated/state.json", JSON.stringify(fallbackState));
+          consola.info("[build:before] 已写入空数据 state.json");
+        }
+      }
+    },
+    "pages:extend"(routes) {
+      routes.splice(
+        routes.findIndex((x) => x.name === "search-searchProjectType"),
+        1,
+      );
+
+      const types = [
+        "mods",
+        "modpacks",
+        "plugins",
+        "resourcepacks",
+        "shaders",
+        "datapacks",
+        "softwares",
+        "languages",
+        "maps",
+      ];
+
+      types.forEach((type) =>
+        routes.push({
+          name: `search-${type}`,
+          path: `/${type}`,
+          file: resolve(__dirname, "src/pages/search/[searchProjectType].vue"),
+          children: [],
+        }),
+      );
+    },
+    async "vintl:extendOptions"(opts) {
+      opts.locales ??= [];
+
+      const isProduction = getDomain() === "https://bbsmc.org.cn";
+
+      const resolveCompactNumberDataImport = await (async () => {
+        const compactNumberLocales: string[] = [];
+
+        for await (const localeFile of globIterate(
+          "node_modules/@vintl/compact-number/dist/locale-data/*.mjs",
+          { ignore: "**/*.data.mjs" },
+        )) {
+          const tag = basename(localeFile, ".mjs");
+          compactNumberLocales.push(tag);
+        }
+
+        function resolveImport(tag: string) {
+          const matchedTag = matchLocale([tag], compactNumberLocales, "en-x-placeholder");
+          return matchedTag === "en-x-placeholder"
+            ? undefined
+            : `@vintl/compact-number/locale-data/${matchedTag}`;
+        }
+
+        return resolveImport;
+      })();
+
+      const resolveOmorphiaLocaleImport = await (async () => {
+        const omorphiaLocales: string[] = [];
+        const omorphiaLocaleSets = new Map<string, { files: { from: string }[] }>();
+
+        for await (const localeDir of globIterate("node_modules/@modrinth/ui/src/locales/*", {
+          posix: true,
+        })) {
+          const tag = basename(localeDir);
+          omorphiaLocales.push(tag);
+
+          const localeFiles: { from: string; format?: string }[] = [];
+
+          omorphiaLocaleSets.set(tag, { files: localeFiles });
+
+          for await (const localeFile of globIterate(`${localeDir}/*`, { posix: true })) {
+            localeFiles.push({
+              from: pathToFileURL(localeFile).toString(),
+              format: "default",
+            });
+          }
+        }
+
+        return function resolveLocaleImport(tag: string) {
+          return omorphiaLocaleSets.get(matchLocale([tag], omorphiaLocales, "en-x-placeholder"));
+        };
+      })();
+
+      for await (const localeDir of globIterate("src/locales/*/", { posix: true })) {
+        const tag = basename(localeDir);
+        if (isProduction && !enabledLocales.includes(tag) && opts.defaultLocale !== tag) continue;
+
+        const locale =
+          opts.locales.find((locale) => locale.tag === tag) ??
+          opts.locales[opts.locales.push({ tag }) - 1]!;
+
+        const localeFiles = (locale.files ??= []);
+
+        for await (const localeFile of globIterate(`${localeDir}/*`, { posix: true })) {
+          const fileName = basename(localeFile);
+          if (fileName === "index.json") {
+            localeFiles.push({
+              from: `./${relative("./src", localeFile)}`,
+              format: "crowdin",
+            });
+          } else if (fileName === "meta.json") {
+            const meta: Record<string, { message: string }> = await fs
+              .readFile(localeFile, "utf8")
+              .then((date) => JSON.parse(date));
+            const localeMeta = (locale.meta ??= {});
+            for (const key in meta) {
+              const value = meta[key];
+              if (value === undefined) continue;
+              localeMeta[key] = value.message;
+            }
+          } else {
+            (locale.resources ??= {})[fileName] = `./${relative("./src", localeFile)}`;
+          }
+        }
+
+        const categoryOverride = localesCategoriesOverrides[tag];
+        if (categoryOverride != null) {
+          (locale.meta ??= {}).category = categoryOverride;
+        }
+
+        const omorphiaLocaleData = resolveOmorphiaLocaleImport(tag);
+        if (omorphiaLocaleData != null) {
+          localeFiles.push(...omorphiaLocaleData.files);
+        }
+
+        const cnDataImport = resolveCompactNumberDataImport(tag);
+        if (cnDataImport != null) {
+          (locale.additionalImports ??= []).push({
+            from: cnDataImport,
+            resolve: false,
+          });
+        }
+      }
+    },
+  },
+  runtimeConfig: {
+    // @ts-ignore
+    apiBaseUrl: process.env.BASE_URL ?? globalThis.BASE_URL ?? getApiUrl(),
+    // @ts-ignore
+    rateLimitKey: process.env.RATE_LIMIT_IGNORE_KEY ?? globalThis.RATE_LIMIT_IGNORE_KEY,
+    pyroBaseUrl: process.env.PYRO_BASE_URL,
+    public: {
+      apiBaseUrl: getApiUrl(),
+      pyroBaseUrl: process.env.PYRO_BASE_URL,
+      siteUrl: getDomain(),
+      production: isProduction(),
+      featureFlagOverrides: getFeatureFlagOverrides(),
+
+      owner: process.env.VERCEL_GIT_REPO_OWNER || "bbsmc",
+      slug: process.env.VERCEL_GIT_REPO_SLUG || "code",
+      branch:
+        process.env.VERCEL_GIT_COMMIT_REF ||
+        process.env.CF_PAGES_BRANCH ||
+        // @ts-ignore
+        globalThis.CF_PAGES_BRANCH ||
+        "master",
+      hash:
+        process.env.VERCEL_GIT_COMMIT_SHA ||
+        process.env.CF_PAGES_COMMIT_SHA ||
+        // @ts-ignore
+        globalThis.CF_PAGES_COMMIT_SHA ||
+        "unknown",
+
+      stripePublishableKey: "",
+    },
+  },
+  typescript: {
+    shim: false,
+    strict: true,
+    typeCheck: false,
+    tsConfig: {
+      compilerOptions: {
+        moduleResolution: "bundler",
+        allowImportingTsExtensions: true,
+      },
+    },
+  },
+  modules: ["@vintl/nuxt", "@pinia/nuxt"],
+  vintl: {
+    defaultLocale: "zh-Hans",
+    locales: [
+      {
+        tag: "zh-Hans",
+        meta: {
+          static: {
+            iso: "en",
+          },
+        },
+      },
+    ],
+    storage: "cookie",
+    parserless: "only-prod",
+    seo: {
+      defaultLocaleHasParameter: false,
+    },
+    onParseError({ error, message, messageId, moduleId, parseMessage, parserOptions }) {
+      const errorMessage = String(error);
+      const modulePath = relative(__dirname, moduleId);
+
+      try {
+        const fallback = parseMessage(message, { ...parserOptions, ignoreTag: true });
+
+        consola.warn(
+          `[i18n] ${messageId} in ${modulePath} cannot be parsed normally due to ${errorMessage}. The tags will will not be parsed.`,
+        );
+
+        return fallback;
+      } catch (err) {
+        const secondaryErrorMessage = String(err);
+
+        const reason =
+          errorMessage === secondaryErrorMessage
+            ? errorMessage
+            : `${errorMessage} and ${secondaryErrorMessage}`;
+
+        consola.warn(
+          `[i18n] ${messageId} in ${modulePath} cannot be parsed due to ${reason}. It will be skipped.`,
+        );
+      }
+    },
+  },
+  nitro: {
+    moduleSideEffects: ["@vintl/compact-number/locale-data"],
+    hooks: {
+      compiled() {
+        // Fix: Nitro doesn't copy tslib/modules/index.js but Node 22 resolves to it via exports.import.node
+        const tslibModulesDir = resolve(__dirname, ".output/server/node_modules/tslib/modules");
+        const tslibSource = resolve(__dirname, "../../node_modules/.pnpm/tslib@2.8.1/node_modules/tslib/modules/index.js");
+        fs.mkdir(tslibModulesDir, { recursive: true })
+          .then(() => fs.copyFile(tslibSource, resolve(tslibModulesDir, "index.js")))
+          .catch(() => {});
+      },
+    },
+  },
+  devtools: {
+    enabled: true,
+  },
+  css: ["~/assets/styles/tailwind.css"],
+  postcss: {
+    plugins: {
+      tailwindcss: {},
+      autoprefixer: {},
+    },
+  },
+  routeRules: {
+    "/**": {
+      headers: {
+        "Accept-CH": "Sec-CH-Prefers-Color-Scheme",
+        "Critical-CH": "Sec-CH-Prefers-Color-Scheme",
+      },
+    },
+  },
+  compatibilityDate: "2024-07-03",
+  telemetry: false,
+  experimental: {
+    // 禁用开发模式下的 JSON payload 日志序列化，避免函数序列化警告
+    renderJsonPayloads: false,
+  },
+});
+
+function getApiUrl() {
+  // @ts-ignore
+  return process.env.BROWSER_BASE_URL ?? globalThis.BROWSER_BASE_URL ?? STAGING_API_URL;
+}
+
+function isProduction() {
+  return process.env.NODE_ENV === "production";
+}
+
+function getFeatureFlagOverrides() {
+  return JSON.parse(process.env.FLAG_OVERRIDES ?? "{}");
+}
+
+function getDomain() {
+  if (process.env.NODE_ENV === "production") {
+    if (process.env.SITE_URL) {
+      return process.env.SITE_URL;
+    }
+    // @ts-ignore
+    else if (process.env.CF_PAGES_URL || globalThis.CF_PAGES_URL) {
+      // @ts-ignore
+      return process.env.CF_PAGES_URL ?? globalThis.CF_PAGES_URL;
+    } else if (process.env.HEROKU_APP_NAME) {
+      return `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
+    } else if (process.env.VERCEL_URL) {
+      return `https://${process.env.VERCEL_URL}`;
+    } else if (getApiUrl() === STAGING_API_URL) {
+      return "https://staging.bbsmc.org.cn";
+    } else {
+      return "https://bbsmc.org.cn";
+    }
+  } else {
+    const port = process.env.PORT || 3000;
+    return `http://localhost:${port}`;
+  }
+}

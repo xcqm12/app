@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/" xmlns:moz="http://www.mozilla.org/2006/browser/search/">
+  <ShortName>BBSMC 模组</ShortName>
+  <Description>在 BBSMC 上搜索资源。</Description>
+  <InputEncoding>UTF-8</InputEncoding>
+  <Image width="16" height="16" type="image/x-icon">https://bbsmc.org.cn/favicon.ico</Image>
+  <Url type="text/html" method="get" template="https://bbsmc.org.cn/mods?q={searchTerms}"/>
+  <Developer>Rinth, Inc.</Developer>
+  <Attribution>Rinth, Inc.</Attribution>
+  <moz:SearchForm>https://bbsmc.org.cn/mods</moz:SearchForm>
+</OpenSearchDescription>

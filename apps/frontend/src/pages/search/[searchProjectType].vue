@@ -1,0 +1,1555 @@
+<template>
+  <div
+    class="new-page sidebar experimental-styles-within"
+    :class="{ 'alt-layout': !cosmetics.rightSearchLayout }"
+  >
+    <Head>
+      <Title
+        >{{ projectType.display }} - BBSMC 我的世界资源下载{{ query ? ` | ${query}` : "" }}</Title
+      >
+    </Head>
+    <aside
+      :class="{
+        'normal-page__sidebar': true,
+      }"
+      aria-label="Filters"
+    >
+      <section v-if="server" class="card">
+        <nuxt-link
+          :to="`/servers/manage/${server.serverId}/content`"
+          class="mb-2 flex items-center gap-2"
+        >
+          <Avatar :src="server.general.image" size="sm" />
+          <div class="flex flex-col gap-2">
+            <span class="font-bold">{{ server.general.name }}</span>
+            <span>{{ server.general.loader }} {{ server.general.mc_version }}</span>
+          </div>
+        </nuxt-link>
+        <Checkbox
+          v-if="projectType.id !== 'modpack'"
+          v-model="serverOverrideGameVersions"
+          label="Override game versions"
+        />
+        <Checkbox
+          v-if="projectType.id !== 'modpack'"
+          v-model="serverOverrideLoaders"
+          label="Override loaders"
+        />
+        <Checkbox
+          v-if="projectType.id !== 'modpack'"
+          v-model="serverHideInstalled"
+          label="Hide already installed"
+        />
+      </section>
+      <section class="card gap-1" :class="{ 'max-lg:!hidden': !sidebarMenuOpen }">
+        <div class="flex items-center gap-2">
+          <div class="iconified-input w-full">
+            <label class="hidden" for="search">搜索</label>
+            <SearchIcon aria-hidden="true" />
+            <input
+              id="search"
+              v-model="queryFilter"
+              name="search"
+              type="search"
+              placeholder="搜索..."
+              autocomplete="off"
+            />
+          </div>
+          <button
+            v-if="
+              !(
+                onlyOpenSource === false &&
+                selectedEnvironments.length === 0 &&
+                selectedVersions.length === 0 &&
+                facets.length === 0 &&
+                orFacets.length === 0 &&
+                negativeFacets.length === 0
+              )
+            "
+            v-tooltip="`重置所有筛选`"
+            class="btn icon-only"
+            aria-label="Reset all filters"
+            @click="clearFilters"
+          >
+            <FilterXIcon aria-hidden="true" />
+          </button>
+        </div>
+        <div
+          v-for="(categories, header, index) in filters"
+          :key="header"
+          :class="`border-0 border-b border-solid border-button-bg py-2 last:border-b-0`"
+        >
+          <button
+            class="flex !w-full bg-transparent px-0 py-2 font-extrabold text-contrast transition-all active:scale-[0.98]"
+            @click="
+              () => {
+                filterAccordions[index].isOpen
+                  ? filterAccordions[index].close()
+                  : filterAccordions[index].open();
+              }
+            "
+          >
+            <template v-if="header === 'gameVersion'"> 游戏版本 </template>
+            <template v-else-if="header === 'loaders' && projectType.id === 'software'">
+              操作系统
+            </template>
+            <template v-else>
+              {{ formatCategoryHeader(header) }}
+            </template>
+            <DropdownIcon
+              class="ml-auto h-5 w-5 transition-transform"
+              :class="{ 'rotate-180': filterAccordions[index]?.isOpen }"
+            />
+          </button>
+          <Accordion ref="filterAccordions" :open-by-default="true">
+            <ScrollablePanel
+              :class="{ 'h-[18rem]': categories.length >= 8 && header === 'gameVersion' }"
+              :no-max-height="header !== 'gameVersion'"
+            >
+              <div class="mr-1 flex flex-col gap-1">
+                <div v-for="category in categories" :key="category.name" class="group flex gap-1">
+                  <button
+                    :class="`flex !w-full items-center gap-2 truncate rounded-xl px-2 py-1 text-sm font-semibold transition-all active:scale-[0.98] ${filterSelected(category) ? 'bg-brand-highlight text-contrast hover:brightness-125' : negativeFilterSelected(category) ? 'bg-highlight-red text-contrast hover:brightness-125' : 'bg-transparent text-secondary hover:bg-button-bg'}`"
+                    @click="
+                      negativeFilterSelected(category)
+                        ? toggleNegativeFilter(category)
+                        : toggleFilter(category)
+                    "
+                  >
+                    <ClientIcon v-if="category.name === '客户端'" class="h-4 w-4" />
+                    <ServerIcon v-else-if="category.name === '服务端'" class="h-4 w-4" />
+                    <div v-if="category.icon" class="h-4" v-html="category.icon" />
+                    <span class="truncate text-sm">{{ $formatCategory(category.name) }}</span>
+                    <BanIcon
+                      v-if="negativeFilterSelected(category)"
+                      :class="`ml-auto h-4 w-4 shrink-0 transition-opacity group-hover:opacity-100 ${negativeFilterSelected(category) ? '' : 'opacity-0'}`"
+                      aria-hidden="true"
+                    />
+                    <CheckIcon
+                      v-else
+                      :class="`ml-auto h-4 w-4 shrink-0 transition-opacity group-hover:opacity-100 ${filterSelected(category) ? '' : 'opacity-0'}`"
+                      aria-hidden="true"
+                    />
+                  </button>
+                  <button
+                    v-if="
+                      (category.type === 'or' || category.type === 'normal') &&
+                      !negativeFilterSelected(category)
+                    "
+                    v-tooltip="negativeFilterSelected(category) ? 'Include' : 'Exclude'"
+                    class="flex items-center justify-center gap-2 rounded-xl bg-transparent px-2 py-1 text-sm font-semibold text-secondary opacity-0 transition-all hover:bg-button-bg hover:text-red active:scale-[0.96] group-hover:opacity-100"
+                    @click="toggleNegativeFilter(category)"
+                  >
+                    <BanIcon class="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            </ScrollablePanel>
+            <Checkbox
+              v-if="header === 'gameVersion'"
+              v-model="showSnapshots"
+              class="mx-2"
+              :label="`显示所有版本`"
+            />
+            <Checkbox
+              v-if="header === 'loaders' && projectType.id === 'mod'"
+              v-model="showAllLoaders"
+              class="mx-2"
+              :label="`显示所有加载器`"
+            />
+          </Accordion>
+        </div>
+      </section>
+    </aside>
+    <section class="normal-page__content">
+      <!-- Banner 轮播区域 - 根据项目类型动态显示 -->
+      <section
+        v-if="hasBanner"
+        class="group relative mb-6 h-[300px] select-none overflow-hidden rounded-xl"
+        :class="isDragging ? 'cursor-grabbing' : 'cursor-grab'"
+        @mouseenter="handleMouseEnter"
+        @mouseleave="handleMouseLeave"
+        @mousedown="handleDragStart"
+        @touchstart="handleDragStart"
+        @touchmove="handleDragMove"
+        @touchend="handleDragEnd"
+      >
+        <div
+          v-for="(item, index) in bannerItems"
+          :key="index"
+          :class="[
+            'absolute inset-0 h-full w-full select-none transition-opacity duration-500',
+            {
+              'z-[1] opacity-100': index === currentBannerSlide,
+              'z-0 opacity-0': index !== currentBannerSlide,
+            },
+          ]"
+          @click="handleBannerClick($event, item.slug)"
+        >
+          <img
+            :src="item.image"
+            :alt="item.title"
+            class="user-select-none absolute inset-0 h-full w-full object-cover"
+            :class="{ 'transition-transform duration-500 group-hover:scale-105': !isDragging }"
+            draggable="false"
+          />
+          <div class="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
+          <div class="pointer-events-none absolute bottom-0 left-0 p-6 text-white md:p-8">
+            <h2 class="banner-title mb-2 text-2xl font-bold md:text-3xl">{{ item.title }}</h2>
+            <p class="banner-description max-w-2xl text-sm md:text-base">{{ item.description }}</p>
+          </div>
+        </div>
+        <div class="absolute bottom-4 right-4 z-[2] flex space-x-2">
+          <button
+            v-for="(_, index) in bannerItems"
+            :key="index"
+            :class="[
+              'h-2 w-2 rounded-full transition-all duration-300',
+              currentBannerSlide === index ? 'bg-white' : 'bg-white/50 hover:bg-white',
+            ]"
+            @click="goToBannerSlide(index)"
+          ></button>
+        </div>
+      </section>
+
+      <div class="card search-controls">
+        <div class="search-filter-container">
+          <button
+            class="iconified-button sidebar-menu-close-button"
+            :class="{ open: sidebarMenuOpen }"
+            @click="sidebarMenuOpen = !sidebarMenuOpen"
+          >
+            <FilterIcon aria-hidden="true" />
+            Filters...
+          </button>
+          <div class="iconified-input">
+            <label class="hidden" for="search">Search</label>
+            <SearchIcon aria-hidden="true" />
+            <input
+              id="search"
+              v-model="query"
+              type="search"
+              name="search"
+              :placeholder="`搜索 ${projectType.display}...`"
+              autocomplete="off"
+              @input="onSearchChange(1)"
+            />
+          </div>
+        </div>
+        <div class="sort-controls">
+          <div class="labeled-control">
+            <span class="labeled-control__label">筛选</span>
+            <Multiselect
+              v-model="sortType"
+              placeholder="Select one"
+              class="search-controls__sorting labeled-control__control"
+              track-by="display"
+              label="display"
+              :options="sortTypes"
+              :searchable="false"
+              :close-on-select="true"
+              :show-labels="false"
+              :allow-empty="false"
+              @update:model-value="onSearchChange(1)"
+            >
+              <template #singleLabel="{ option }">
+                {{ option.display }}
+              </template>
+            </Multiselect>
+          </div>
+          <div class="labeled-control">
+            <span class="labeled-control__label">页数</span>
+            <Multiselect
+              v-model="maxResults"
+              placeholder="Select one"
+              class="labeled-control__control"
+              :options="
+                maxResultsForView[cosmetics.searchDisplayMode?.[projectType.id] || 'gallery']
+              "
+              :searchable="false"
+              :close-on-select="true"
+              :show-labels="false"
+              :allow-empty="false"
+              @update:model-value="onMaxResultsChange(currentPage)"
+            />
+          </div>
+          <button
+            v-tooltip="localString(cosmetics.searchDisplayMode[projectType.id]) + ' 视图'"
+            :aria-label="localString(cosmetics.searchDisplayMode[projectType.id]) + ' 视图'"
+            class="square-button"
+            @click="cycleSearchDisplayMode()"
+          >
+            <GridIcon v-if="cosmetics.searchDisplayMode[projectType.id] === 'grid'" />
+            <ImageIcon v-else-if="cosmetics.searchDisplayMode[projectType.id] === 'gallery'" />
+            <ListIcon v-else />
+          </button>
+        </div>
+      </div>
+      <LogoAnimated v-if="searchLoading && !noLoad" />
+      <div v-else-if="results && results.hits && results.hits.length === 0" class="no-results">
+        <p>无搜索结果</p>
+      </div>
+      <div v-else class="search-results-container">
+        <div
+          id="search-results"
+          class="project-list"
+          :class="
+            'display-mode--' +
+            (cosmetics.searchDisplayMode?.[projectType.id] === undefined
+              ? 'gallery'
+              : cosmetics.searchDisplayMode?.[projectType.id])
+          "
+          role="list"
+          aria-label="Search results"
+        >
+          <ProjectCard
+            v-for="result in results?.hits"
+            :id="result.slug ? result.slug : result.project_id"
+            :key="result.project_id"
+            :display="cosmetics.searchDisplayMode?.[projectType.id] || 'gallery'"
+            :featured-image="result.featured_gallery ? result.featured_gallery : result.gallery[0]"
+            :type="result.project_type"
+            :author="result.author"
+            :name="result.title"
+            :description="result.description"
+            :created-at="result.date_created"
+            :updated-at="result.date_modified"
+            :downloads="result.downloads.toString()"
+            :follows="result.follows.toString()"
+            :icon-url="result.icon_url"
+            :client-side="result.client_side"
+            :server-side="result.server_side"
+            :categories="result.display_categories"
+            :search="true"
+            :show-updated-date="!server && sortType.name !== 'newest'"
+            :show-created-date="!server"
+            :hide-loaders="
+              ['resourcepack', 'datapack', 'software', 'language'].includes(projectType.id)
+            "
+            :color="result.color"
+          >
+            <template v-if="server">
+              <button
+                v-if="
+                  result.installed ||
+                  server.mods.data.find((x) => x.project_id === result.project_id) ||
+                  server.general?.project?.id === result.project_id
+                "
+                disabled
+                class="btn btn-outline btn-primary"
+              >
+                <CheckIcon />
+                Installed
+              </button>
+              <button v-else-if="result.installing" disabled class="btn btn-outline btn-primary">
+                Installing...
+              </button>
+              <button v-else class="btn btn-outline btn-primary" @click="serverInstall(result)">
+                <DownloadIcon />
+                Install
+              </button>
+            </template>
+          </ProjectCard>
+        </div>
+      </div>
+      <!-- Google AdSense -->
+<!--      <AdUnit slot="7766138161" format="horizontal" class="mt-4" />-->
+      <div class="pagination-after">
+        <pagination
+          :page="currentPage"
+          :count="pageCount"
+          :link-function="(x) => getSearchUrl(x <= 1 ? 0 : (x - 1) * maxResults)"
+          class="justify-end"
+          @switch-page="onSearchChangeToTop"
+        />
+      </div>
+    </section>
+  </div>
+</template>
+<script setup>
+import { formatCategoryHeader, localString } from "@modrinth/utils";
+
+import { Multiselect } from "vue-multiselect";
+import { Pagination, ScrollablePanel, Checkbox, Avatar } from "@modrinth/ui";
+import { BanIcon, DropdownIcon, CheckIcon, FilterXIcon, DownloadIcon } from "@modrinth/assets";
+import ProjectCard from "~/components/ui/ProjectCard.vue";
+import AdUnit from "~/components/ui/AdUnit.vue";
+import LogoAnimated from "~/components/brand/LogoAnimated.vue";
+import { addNotification } from "~/composables/notifs.js";
+
+import ClientIcon from "~/assets/images/categories/client.svg?component";
+import ServerIcon from "~/assets/images/categories/server.svg?component";
+
+import SearchIcon from "~/assets/images/utils/search.svg?component";
+import FilterIcon from "~/assets/images/utils/filter.svg?component";
+import GridIcon from "~/assets/images/utils/grid.svg?component";
+import ListIcon from "~/assets/images/utils/list.svg?component";
+import ImageIcon from "~/assets/images/utils/image.svg?component";
+import Accordion from "~/components/ui/Accordion.vue";
+
+const sidebarMenuOpen = ref(false);
+const showAllLoaders = ref(false);
+
+const filterAccordions = ref([]);
+
+// Banner 轮播相关状态 - 按项目类型分类
+const bannerItemsConfig = ref({
+  modpack: [
+    {
+      image:
+        "https://cdn.bbsmc.org.cn/bbsmc/data/G23dLUsP/images/e681d996cd07316e12facedd8fb22e9f74ce68a1_350.webp",
+      title: "剑与王国",
+      description: "围绕模拟殖民地与村民招募玩法的深度魔改整合包",
+      slug: "/modpack/snk",
+    },
+    {
+      image:
+        "https://cdn.bbsmc.org.cn/bbsmc/data/EIrkPpcm/images/7d43813f0ff22b6c769e7382d36d5059657e8a94_350.webp",
+      title: "龙之冒险：新征程",
+      description: "面对众多怪物的冒险之旅，你做好准备了吗？",
+      slug: "/modpack/lzmx",
+    },
+    {
+      image:
+        "https://cdn.bbsmc.org.cn/bbsmc/data/XMUypeti/images/82d38f228afad3b75202eaf8a148c1318a8cea48_350.webp",
+      title: "愚者 - The Fool",
+      description: "愚弄、伪装、欺诈，屠龙者终成恶龙。",
+      slug: "/modpack/the-fool",
+    },
+    {
+      image:
+        "https://cdn.bbsmc.org.cn/bbsmc/data/e11vzqXl/images/346fd8930411f592c94acce68b8290a5266843e3_350.webp",
+      title: "香草纪元:食旅纪行 ",
+      description: "农夫乐事全附属与异界冒险",
+      slug: "/modpack/vefc",
+    },
+  ],
+  language: [
+    {
+      image: "/tutorial/language-banner.jpg",
+      title: "整合包汉化教程 - 全流程使用指南",
+      description: "想要游玩中文版整合包？村民带你学汉化！",
+      slug: "/install-tutorial",
+    },
+  ],
+  software: [],
+});
+
+// 获取当前项目类型的 banner 列表
+const bannerItems = computed(() => {
+  return bannerItemsConfig.value[projectType.value.id] || [];
+});
+
+// 判断当前类型是否有 banner
+const hasBanner = computed(() => {
+  return bannerItems.value.length > 0;
+});
+
+const currentBannerSlide = ref(0);
+const isDragging = ref(false);
+const dragStartX = ref(0);
+const dragCurrentX = ref(0);
+const hasDragged = ref(false);
+const bannerAutoPlayInterval = ref(null);
+const isClientMounted = ref(false);
+
+const data = useNuxtApp();
+const route = useNativeRoute();
+
+const cosmetics = useCosmetics();
+const tags = useTags();
+
+const query = ref("");
+const facets = ref([]);
+const orFacets = ref([]);
+const negativeFacets = ref([]);
+const selectedVersions = ref([]);
+const onlyOpenSource = ref(false);
+const showSnapshots = ref(false);
+const selectedEnvironments = ref([]);
+const sortTypes = shallowReadonly([
+  { display: "相关", name: "relevance" },
+  { display: "下载数", name: "downloads" },
+  { display: "关注度", name: "follows" },
+  { display: "最近发布", name: "newest" },
+  { display: "最近更新", name: "updated" },
+]);
+const sortType = ref({ display: "相关", name: "relevance" });
+const maxResults = ref(20);
+const currentPage = ref(1);
+const projectType = ref({ id: "mod", display: "mod", actual: "mod" });
+const ogTitle = computed(
+  () =>
+    `${projectType.value.display} - BBSMC 我的世界资源下载${query.value ? " | " + query.value : ""}`,
+);
+const projectTypeDescriptions = {
+  mod: "浏览和下载 Minecraft 模组，涵盖 Fabric、Forge、NeoForge、Quilt 等主流加载器，为你的游戏增添新内容、机制和玩法。",
+  project:
+    "探索 BBSMC 上的各类 Minecraft 资源，包括模组、插件、光影包、资源包等，一站式满足你的所有需求。",
+  plugin:
+    "查找适用于 Bukkit、Spigot、Paper 等服务端的 Minecraft 插件，轻松管理和扩展你的多人服务器功能。",
+  datapack:
+    "下载 Minecraft 原版数据包，无需安装模组即可修改游戏规则、合成配方、战利品表和世界生成。",
+  shader:
+    "发现精美的 Minecraft 光影包，通过实时光影、水面反射和动态天气效果，让你的游戏画面焕然一新。",
+  resourcepack: "浏览 Minecraft 资源包，更换游戏纹理、模型、音效和界面，打造独一无二的视觉风格。",
+  modpack:
+    "下载精心整合的 Minecraft 模组包/整合包，开箱即用的模组组合，体验科技、魔法、冒险等各类主题玩法。",
+  software:
+    "获取 Minecraft 相关软件和工具，包括启动器、服务端、地图编辑器等实用资源，提升你的游戏体验。",
+  language: "下载 Minecraft 汉化资源和语言包，为你喜爱的模组和资源包提供中文翻译支持。",
+};
+const description = computed(
+  () =>
+    projectTypeDescriptions[projectType.value.id] ||
+    `在 BBSMC 上搜索和下载 Minecraft ${projectType.value.display}，丰富的筛选条件帮助你快速找到所需资源。`,
+);
+
+useSeoMeta({
+  description,
+  ogTitle,
+  ogDescription: description,
+  ogImage: "https://cdn.bbsmc.org.cn/raw/bbsmc-logo.png",
+});
+
+if (route.query.q) {
+  query.value = route.query.q;
+}
+if (route.query.f) {
+  facets.value = getArrayOrString(route.query.f);
+}
+if (route.query.g) {
+  orFacets.value = getArrayOrString(route.query.g);
+}
+if (route.query.nf) {
+  negativeFacets.value = getArrayOrString(route.query.nf);
+}
+if (route.query.v) {
+  selectedVersions.value = getArrayOrString(route.query.v);
+}
+if (route.query.l) {
+  onlyOpenSource.value = route.query.l === "true";
+}
+if (route.query.h) {
+  showSnapshots.value = route.query.h === "true";
+}
+if (route.query.e) {
+  selectedEnvironments.value = getArrayOrString(route.query.e);
+}
+if (route.query.s) {
+  sortType.value.name = route.query.s;
+
+  switch (sortType.value.name) {
+    case "relevance":
+      sortType.value.display = "相关";
+      break;
+    case "downloads":
+      sortType.value.display = "下载数";
+      break;
+    case "newest":
+      sortType.value.display = "最近发布";
+      break;
+    case "updated":
+      sortType.value.display = "最近更新";
+      break;
+    case "follows":
+      sortType.value.display = "关注度";
+      break;
+  }
+}
+
+if (route.query.m) {
+  maxResults.value = route.query.m;
+}
+if (route.query.o) {
+  currentPage.value = Math.ceil(route.query.o / maxResults.value) + 1;
+}
+
+const server = ref();
+const serverHideInstalled = ref(false);
+const serverOverrideGameVersions = ref(false);
+const serverOverrideLoaders = ref(false);
+
+if (route.query.sid) {
+  server.value = await usePyroServer(route.query.sid, ["general", "mods"]);
+}
+
+if (route.query.shi && projectType.value.id !== "modpack") {
+  serverHideInstalled.value = route.query.shi === "true";
+}
+
+if (route.query.sogv && projectType.value.id !== "modpack") {
+  serverOverrideGameVersions.value = route.query.sogv === "true";
+}
+
+if (route.query.sol && projectType.value.id !== "modpack") {
+  serverOverrideLoaders.value = route.query.sol === "true";
+}
+
+async function serverInstall(project) {
+  project.installing = true;
+  try {
+    const versions = await useBaseFetch(`project/${project.project_id}/version`, {}, false, true);
+
+    const version =
+      versions.find(
+        (x) =>
+          x.game_versions.includes(server.value.general.mc_version) &&
+          x.loaders.includes(server.value.general.loader.toLowerCase()),
+      ) ?? versions[0];
+
+    if (projectType.value.id === "modpack") {
+      await server.value.general?.reinstall(route.query.sid, false, project.project_id, version.id);
+      project.installed = true;
+      navigateTo(`/servers/manage/${route.query.sid}/options/loader`);
+    } else if (projectType.value.id === "mod") {
+      await server.value.mods.install(version.project_id, version.id);
+      await server.value.refresh(["mods"]);
+      project.installed = true;
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  project.installing = false;
+}
+
+projectType.value = tags.value.projectTypes.find(
+  (x) => x.id === route.path.replaceAll(/^\/|s\/?$/g, ""), // Removes prefix `/` and suffixes `s` and `s/`
+);
+
+// 插件类型默认按更新时间排序
+if (projectType.value.id === "plugin" && !route.query.s) {
+  sortType.value = { display: "最近更新", name: "updated" };
+}
+
+const noLoad = ref(false);
+const {
+  data: rawResults,
+  refresh: refreshSearch,
+  pending: searchLoading,
+  error: searchError,
+} = useLazyFetch(
+  () => {
+    const config = useRuntimeConfig();
+    const base = import.meta.server ? config.apiBaseUrl : config.public.apiBaseUrl;
+    const params = [`limit=${maxResults.value}`, `index=${sortType.value.name}`];
+
+    if (query.value.length > 0) {
+      params.push(`query=${encodeURIComponent(query.value)}`);
+    }
+
+    if (
+      facets.value.length > 0 ||
+      orFacets.value.length > 0 ||
+      negativeFacets.value.length > 0 ||
+      selectedVersions.value.length > 0 ||
+      selectedEnvironments.value.length > 0 ||
+      projectType.value
+    ) {
+      let formattedFacets = [];
+      for (const facet of facets.value) {
+        formattedFacets.push([facet]);
+      }
+
+      for (const facet of negativeFacets.value) {
+        formattedFacets.push([facet.replace(":", "!=")]);
+      }
+
+      if (server.value && serverHideInstalled.value) {
+        const installedMods = server.value.mods.data
+          .filter((x) => x.project_id)
+          .map((x) => x.project_id);
+
+        installedMods.map((x) => [`project_id != ${x}`]).forEach((x) => formattedFacets.push(x));
+      }
+
+      // loaders specifier
+      if (server.value && !(serverOverrideLoaders.value || projectType.value.id === "modpack")) {
+        formattedFacets.push([
+          `categories:${encodeURIComponent(server.value.general.loader.toLowerCase())}`,
+        ]);
+      } else if (orFacets.value.length > 0) {
+        formattedFacets.push(orFacets.value);
+      } else if (projectType.value.id === "plugin") {
+        formattedFacets.push(
+          tags.value.loaderData.allPluginLoaders.map(
+            (x) => `categories:'${encodeURIComponent(x)}'`,
+          ),
+        );
+      } else if (projectType.value.id === "mod") {
+        formattedFacets.push(
+          tags.value.loaderData.modLoaders.map((x) => `categories:'${encodeURIComponent(x)}'`),
+        );
+      } else if (projectType.value.id === "datapack") {
+        formattedFacets.push(
+          tags.value.loaderData.dataPackLoaders.map((x) => `categories:'${encodeURIComponent(x)}'`),
+        );
+      } else if (projectType.value.id === "software") {
+        formattedFacets.push(
+          tags.value.loaderData.dataSoftwareLoaders.map(
+            (x) => `categories:'${encodeURIComponent(x)}'`,
+          ),
+        );
+      }
+
+      if (
+        server.value &&
+        !(serverOverrideGameVersions.value || projectType.value.id === "modpack")
+      ) {
+        formattedFacets.push([`versions:${encodeURIComponent(server.value.general.mc_version)}`]);
+      } else if (selectedVersions.value.length > 0) {
+        const versionFacets = [];
+        for (const facet of selectedVersions.value) {
+          versionFacets.push("versions:" + facet);
+        }
+        formattedFacets.push(versionFacets);
+      }
+
+      if (onlyOpenSource.value) {
+        formattedFacets.push(["open_source:true"]);
+      }
+
+      if (selectedEnvironments.value.length > 0) {
+        let environmentFacets = [];
+
+        const includesClient = selectedEnvironments.value.includes("client");
+        const includesServer = selectedEnvironments.value.includes("server");
+        if (includesClient && includesServer) {
+          environmentFacets = [["client_side:required"], ["server_side:required"]];
+        } else {
+          if (includesClient) {
+            environmentFacets = [
+              ["client_side:optional", "client_side:required"],
+              ["server_side:optional", "server_side:unsupported"],
+            ];
+          }
+          if (includesServer) {
+            environmentFacets = [
+              ["client_side:optional", "client_side:unsupported"],
+              ["server_side:optional", "server_side:required"],
+            ];
+          }
+        }
+
+        formattedFacets = [...formattedFacets, ...environmentFacets];
+      }
+
+      if (projectType.value) {
+        formattedFacets.push([`project_type:${projectType.value.actual}`]);
+      }
+
+      params.push(`facets=${encodeURIComponent(JSON.stringify(formattedFacets))}`);
+    }
+
+    const offset = (currentPage.value - 1) * maxResults.value;
+    if (currentPage.value !== 1) {
+      params.push(`offset=${offset}`);
+    }
+
+    let url = "search";
+
+    if (params.length > 0) {
+      for (let i = 0; i < params.length; i++) {
+        url += i === 0 ? `?${params[i]}` : `&${params[i]}`;
+      }
+    }
+
+    return `${base}${url}`;
+  },
+  {
+    transform: (hits) => {
+      noLoad.value = false;
+      return hits;
+    },
+  },
+);
+
+const results = shallowRef(toRaw(rawResults));
+const pageCount = computed(() =>
+  results.value ? Math.ceil(results.value.total_hits / results.value.limit) : 1,
+);
+
+// 监听搜索错误并显示通知
+watch(searchError, (error) => {
+  if (error) {
+    const statusCode = error?.statusCode || error?.response?.status;
+    const errorData = error?.data;
+
+    if (statusCode === 429 || errorData?.error === "ratelimit_error") {
+      const description = errorData?.description || "您的请求过于频繁";
+      addNotification({
+        group: "main",
+        title: "请求过于频繁",
+        text: `${description}，请稍后再试。`,
+        type: "warn",
+      });
+    }
+  }
+});
+
+const router = useNativeRouter();
+
+function onSearchChange(newPageNumber) {
+  noLoad.value = true;
+
+  currentPage.value = newPageNumber;
+
+  if (query.value === null) {
+    return;
+  }
+
+  refreshSearch();
+
+  if (import.meta.client) {
+    const obj = getSearchUrl((currentPage.value - 1) * maxResults.value, true);
+    router.replace({ path: route.path, query: obj });
+  }
+}
+
+function getSearchUrl(offset, useObj) {
+  const queryItems = [];
+  const obj = {};
+
+  if (query.value) {
+    queryItems.push(`q=${encodeURIComponent(query.value)}`);
+    obj.q = query.value;
+  }
+  if (offset > 0) {
+    queryItems.push(`o=${offset}`);
+    obj.o = offset;
+  }
+  if (facets.value.length > 0) {
+    queryItems.push(`f=${encodeURIComponent(facets.value)}`);
+    obj.f = facets.value;
+  }
+  if (orFacets.value.length > 0) {
+    queryItems.push(`g=${encodeURIComponent(orFacets.value)}`);
+    obj.g = orFacets.value;
+  }
+  if (negativeFacets.value.length > 0) {
+    queryItems.push(`nf=${encodeURIComponent(negativeFacets.value)}`);
+    obj.nf = negativeFacets.value;
+  }
+  if (selectedVersions.value.length > 0) {
+    queryItems.push(`v=${encodeURIComponent(selectedVersions.value)}`);
+    obj.v = selectedVersions.value;
+  }
+  if (onlyOpenSource.value) {
+    queryItems.push("l=true");
+    obj.l = true;
+  }
+  if (showSnapshots.value) {
+    queryItems.push("h=true");
+    obj.h = true;
+  }
+  if (selectedEnvironments.value.length > 0) {
+    queryItems.push(`e=${encodeURIComponent(selectedEnvironments.value)}`);
+    obj.e = selectedEnvironments.value;
+  }
+  if (sortType.value.name !== "relevance") {
+    queryItems.push(`s=${encodeURIComponent(sortType.value.name)}`);
+    obj.s = sortType.value.name;
+  }
+  if (maxResults.value !== 20) {
+    queryItems.push(`m=${encodeURIComponent(maxResults.value)}`);
+    obj.m = maxResults.value;
+  }
+  if (server.value) {
+    queryItems.push(`sid=${encodeURIComponent(server.value.serverId)}`);
+    obj.sid = server.value.serverId;
+  }
+  if (serverHideInstalled.value) {
+    queryItems.push("shi=true");
+    obj.shi = true;
+  }
+  if (serverOverrideGameVersions.value) {
+    queryItems.push("sogv=true");
+    obj.sogv = true;
+  }
+  if (serverOverrideLoaders.value) {
+    queryItems.push("sol=true");
+    obj.sol = true;
+  }
+
+  let url = `${route.path}`;
+
+  if (queryItems.length > 0) {
+    url += `?${queryItems[0]}`;
+
+    for (let i = 1; i < queryItems.length; i++) {
+      url += `&${queryItems[i]}`;
+    }
+  }
+
+  return useObj ? obj : url;
+}
+
+function clearFilters() {
+  facets.value = [];
+  orFacets.value = [];
+  negativeFacets.value = [];
+  onlyOpenSource.value = false;
+  selectedVersions.value = [];
+  selectedEnvironments.value = [];
+  onSearchChange(1);
+}
+
+function onSearchChangeToTop(newPageNumber) {
+  if (import.meta.client) {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  onSearchChange(newPageNumber);
+}
+
+function cycleSearchDisplayMode() {
+  cosmetics.value.searchDisplayMode[projectType.value.id] = data.$cycleValue(
+    cosmetics.value.searchDisplayMode[projectType.value.id],
+    tags.value.projectViewModes,
+  );
+  setClosestMaxResults();
+}
+
+const previousMaxResults = ref(20);
+const maxResultsForView = ref({
+  list: [5, 10, 15, 20, 50, 100],
+  grid: [6, 12, 18, 24, 48, 96],
+  gallery: [6, 10, 16, 20, 50, 100],
+});
+
+function onMaxResultsChange(newPageNumber) {
+  newPageNumber = Math.max(
+    1,
+    Math.min(
+      Math.floor(newPageNumber / (maxResults.value / previousMaxResults.value)),
+      pageCount.value,
+    ),
+  );
+  previousMaxResults.value = maxResults.value;
+  onSearchChange(newPageNumber);
+}
+
+function setClosestMaxResults() {
+  const view = cosmetics.value.searchDisplayMode[projectType.value.id];
+  const maxResultsOptions = maxResultsForView.value[view] ?? [20];
+  const currentMax = maxResults.value;
+  if (!maxResultsOptions.includes(currentMax)) {
+    maxResults.value = maxResultsOptions.reduce(function (prev, curr) {
+      return Math.abs(curr - currentMax) <= Math.abs(prev - currentMax) ? curr : prev;
+    });
+  }
+}
+
+const queryFilter = ref("");
+const filters = computed(() => {
+  const filters = {};
+
+  if (
+    projectType.value.id !== "resourcepack" &&
+    projectType.value.id !== "datapack" &&
+    projectType.value.id !== "map" &&
+    projectType.value.id !== "language" &&
+    (!server.value ||
+      serverOverrideLoaders.value ||
+      projectType.value.id === "modpack" ||
+      projectType.value.id === "software")
+  ) {
+    const loaders = tags.value.loaders
+      .filter((x) => {
+        if (projectType.value.id === "mod" && !showAllLoaders.value) {
+          return (
+            tags.value.loaderData.modLoaders.includes(x.name) &&
+            !tags.value.loaderData.hiddenModLoaders.includes(x.name)
+          );
+        } else if (projectType.value.id === "mod" && showAllLoaders.value) {
+          return tags.value.loaderData.modLoaders.includes(x.name);
+        } else if (projectType.value.id === "plugin") {
+          return tags.value.loaderData.pluginLoaders.includes(x.name);
+        } else if (projectType.value.id === "datapack") {
+          return tags.value.loaderData.dataPackLoaders.includes(x.name);
+        } else if (projectType.value.id === "software") {
+          return tags.value.loaderData.dataSoftwareLoaders.includes(x.name);
+        } else {
+          return x.supported_project_types.includes(projectType.value.actual);
+        }
+      })
+      .slice();
+
+    loaders.sort((a, b) => {
+      const isAHidden = tags.value.loaderData.hiddenModLoaders.includes(a.name);
+      const isBHidden = tags.value.loaderData.hiddenModLoaders.includes(b.name);
+
+      // Sort hidden mod loaders (true) after visible ones (false)
+      if (isAHidden && !isBHidden) return 1;
+      if (!isAHidden && isBHidden) return -1;
+      return 0; // No sorting if both are hidden or both are visible
+    });
+
+    if (loaders.length > 0) {
+      filters.loaders = loaders.map((x) => ({
+        icon: x.icon,
+        name: x.name,
+        type: "or",
+        facet: `categories:${x.name}`,
+      }));
+    }
+
+    if (projectType.value.id === "plugin") {
+      const platforms = tags.value.loaders.filter((x) =>
+        tags.value.loaderData.pluginPlatformLoaders.includes(x.name),
+      );
+
+      filters.platforms = platforms.map((x) => ({
+        icon: x.icon,
+        name: x.name,
+        type: "or",
+        facet: `categories:${x.name}`,
+      }));
+    }
+  }
+
+  if (!server.value || serverOverrideGameVersions.value || projectType.value.id === "modpack") {
+    filters.gameVersion = tags.value.gameVersions
+      .filter((x) => (showSnapshots.value ? true : x.version_type === "release"))
+      .map((x) => ({ name: x.version, type: "gameVersion" }));
+  }
+
+  if (
+    !["resourcepack", "plugin", "shader", "datapack", "software", "language", "map"].includes(
+      projectType.value.id,
+    )
+  ) {
+    filters.environment = [
+      { name: "客户端", type: "env" },
+      { name: "服务端", type: "env" },
+    ];
+  }
+
+  for (const category of data.$sortedCategories()) {
+    if (category.project_type === projectType.value.actual) {
+      const parsedCategory = {
+        name: category.name,
+        icon: category.icon,
+        facet: `categories:${category.name}`,
+        type: category.header === "resolutions" ? "or" : "normal",
+      };
+
+      if (filters[category.header]) {
+        filters[category.header].push(parsedCategory);
+      } else {
+        filters[category.header] = [parsedCategory];
+      }
+    }
+  }
+
+  filters.license = [];
+  // filters.license = [{ name: "进筛选开源", type: "license" }];
+
+  const filteredObj = {};
+
+  for (const [key, value] of Object.entries(filters)) {
+    const filters = queryFilter.value
+      ? value.filter((x) => x.name.toLowerCase().includes(queryFilter.value.toLowerCase()))
+      : value;
+
+    if (filters.length > 0) {
+      filteredObj[key] = filters;
+    }
+  }
+
+  // 对于 software 类型，只返回 loaders 筛选条件
+  if (projectType.value.id === "software") {
+    return {
+      loaders: filteredObj.loaders || [],
+    };
+  }
+
+  if (projectType.value.id === "language") {
+    return {
+      汉化对象: filteredObj.汉化对象 || [],
+      汉化方式: filteredObj.汉化方式 || [],
+      翻译完整度: filteredObj.翻译完整度 || [],
+      翻译来源: filteredObj.翻译来源 || [],
+    };
+  }
+
+  return filteredObj;
+});
+
+function filterSelected(filter) {
+  if (filter.type === "or") {
+    return orFacets.value.includes(filter.facet);
+  } else if (filter.type === "normal") {
+    return facets.value.includes(filter.facet);
+  } else if (filter.type === "env") {
+    return selectedEnvironments.value.includes(filter.name);
+  } else if (filter.type === "gameVersion") {
+    return selectedVersions.value.includes(filter.name);
+  } else if (filter.type === "license") {
+    return onlyOpenSource.value;
+  }
+}
+
+function negativeFilterSelected(filter) {
+  if (filter.type === "or" || filter.type === "normal") {
+    return negativeFacets.value.includes(filter.facet);
+  }
+}
+
+function toggleNegativeFilter(filter) {
+  const elementName = filter.facet;
+
+  if (filterSelected(filter)) {
+    if (filter.type === "or") {
+      const index = orFacets.value.indexOf(elementName);
+      orFacets.value.splice(index, 1);
+    } else if (filter.type === "normal") {
+      const index = facets.value.indexOf(elementName);
+      facets.value.splice(index, 1);
+    }
+  }
+
+  if (filter.type === "or" || filter.type === "normal") {
+    const index = negativeFacets.value.indexOf(elementName);
+    if (index !== -1) {
+      negativeFacets.value.splice(index, 1);
+    } else {
+      negativeFacets.value.push(elementName);
+    }
+  }
+
+  onSearchChange(1);
+}
+
+function toggleFilter(filter, doNotSendRequest) {
+  const elementName = filter.facet;
+
+  if (negativeFilterSelected(filter)) {
+    const index = negativeFacets.value.indexOf(elementName);
+    negativeFacets.value.splice(index, 1);
+  }
+
+  if (filter.type === "or") {
+    const index = orFacets.value.indexOf(elementName);
+    if (index !== -1) {
+      orFacets.value.splice(index, 1);
+    } else {
+      if (elementName === "categories:purpur") {
+        if (!orFacets.value.includes("categories:paper")) {
+          orFacets.value.push("categories:paper");
+        }
+        if (!orFacets.value.includes("categories:spigot")) {
+          orFacets.value.push("categories:spigot");
+        }
+        if (!orFacets.value.includes("categories:bukkit")) {
+          orFacets.value.push("categories:bukkit");
+        }
+      } else if (elementName === "categories:paper") {
+        if (!orFacets.value.includes("categories:spigot")) {
+          orFacets.value.push("categories:spigot");
+        }
+        if (!orFacets.value.includes("categories:bukkit")) {
+          orFacets.value.push("categories:bukkit");
+        }
+      } else if (elementName === "categories:spigot") {
+        if (!orFacets.value.includes("categories:bukkit")) {
+          orFacets.value.push("categories:bukkit");
+        }
+      } else if (elementName === "categories:waterfall") {
+        if (!orFacets.value.includes("categories:bungeecord")) {
+          orFacets.value.push("categories:bungeecord");
+        }
+      }
+      orFacets.value.push(elementName);
+    }
+  } else if (filter.type === "normal") {
+    const index = facets.value.indexOf(elementName);
+
+    if (index !== -1) {
+      facets.value.splice(index, 1);
+    } else {
+      facets.value.push(elementName);
+    }
+  } else if (filter.type === "env") {
+    let name = "";
+    if (filter.name === "客户端") {
+      name = "client";
+    } else if (filter.name === "服务端") {
+      name = "server";
+    }
+    const index = selectedEnvironments.value.indexOf(name);
+    if (index !== -1) {
+      selectedEnvironments.value.splice(index, 1);
+    } else {
+      selectedEnvironments.value.push(name);
+    }
+  } else if (filter.type === "gameVersion") {
+    const index = selectedVersions.value.indexOf(filter.name);
+    if (index !== -1) {
+      selectedVersions.value.splice(index, 1);
+    } else {
+      selectedVersions.value.push(filter.name);
+    }
+  } else if (filter.type === "license") {
+    onlyOpenSource.value = !onlyOpenSource.value;
+  }
+
+  if (!doNotSendRequest) {
+    onSearchChange(1);
+  }
+}
+
+// Banner 轮播处理函数
+const handleDragStart = (e) => {
+  const isTouchEvent = e.type.includes("touch");
+  isDragging.value = true;
+  hasDragged.value = false;
+  dragStartX.value = isTouchEvent ? e.touches[0].clientX : e.clientX;
+  dragCurrentX.value = dragStartX.value;
+  stopBannerAutoPlay();
+
+  if (!isTouchEvent) {
+    e.preventDefault();
+    document.addEventListener("mousemove", handleDragMove);
+    document.addEventListener("mouseup", handleDragEnd);
+  }
+};
+
+const handleDragMove = (e) => {
+  if (!isDragging.value) return;
+  const isTouchEvent = e.type.includes("touch");
+  const currentX = isTouchEvent ? e.touches[0].clientX : e.clientX;
+  dragCurrentX.value = currentX;
+
+  const distance = Math.abs(currentX - dragStartX.value);
+  if (distance > 5) {
+    hasDragged.value = true;
+    e.preventDefault();
+  }
+};
+
+const handleDragEnd = (_e) => {
+  if (!isDragging.value) return;
+
+  const dragDistance = dragCurrentX.value - dragStartX.value;
+  const threshold = 50;
+
+  if (Math.abs(dragDistance) > threshold) {
+    if (dragDistance > 0) {
+      prevBannerSlide();
+    } else {
+      nextBannerSlide();
+    }
+  }
+
+  isDragging.value = false;
+  startBannerAutoPlay();
+
+  document.removeEventListener("mousemove", handleDragMove);
+  document.removeEventListener("mouseup", handleDragEnd);
+
+  setTimeout(() => {
+    dragStartX.value = 0;
+    dragCurrentX.value = 0;
+  }, 10);
+};
+
+const prevBannerSlide = () => {
+  currentBannerSlide.value =
+    currentBannerSlide.value === 0 ? bannerItems.value.length - 1 : currentBannerSlide.value - 1;
+  startBannerAutoPlay();
+};
+
+const nextBannerSlide = () => {
+  currentBannerSlide.value = (currentBannerSlide.value + 1) % bannerItems.value.length;
+  startBannerAutoPlay();
+};
+
+const goToBannerSlide = (index) => {
+  if (index === currentBannerSlide.value) {
+    window.open(bannerItems.value[index].slug, "_blank");
+    return;
+  }
+  currentBannerSlide.value = index;
+  startBannerAutoPlay();
+};
+
+const handleBannerClick = (e, url) => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (hasDragged.value) {
+    hasDragged.value = false;
+    return;
+  }
+
+  window.open(url, "_blank");
+};
+
+const startBannerAutoPlay = () => {
+  if (!isClientMounted.value) return;
+  stopBannerAutoPlay();
+  bannerAutoPlayInterval.value = setInterval(() => {
+    nextBannerSlide();
+  }, 5000);
+};
+
+const stopBannerAutoPlay = () => {
+  if (bannerAutoPlayInterval.value) {
+    clearInterval(bannerAutoPlayInterval.value);
+    bannerAutoPlayInterval.value = null;
+  }
+};
+
+const handleMouseEnter = () => {
+  if (!isClientMounted.value) return;
+  stopBannerAutoPlay();
+};
+
+const handleMouseLeave = () => {
+  if (!isClientMounted.value) return;
+  startBannerAutoPlay();
+};
+
+// 生命周期钩子
+onMounted(() => {
+  isClientMounted.value = true;
+  if (hasBanner.value) {
+    currentBannerSlide.value = Math.floor(Math.random() * bannerItems.value.length);
+    startBannerAutoPlay();
+  }
+});
+
+onUnmounted(() => {
+  stopBannerAutoPlay();
+  isClientMounted.value = false;
+});
+</script>
+
+<style lang="scss" scoped>
+.normal-page__content {
+  // Passthrough children as grid items on mobile
+  display: contents;
+
+  @media screen and (min-width: 1024px) {
+    display: block;
+  }
+}
+
+// Move the filters "sidebar" on mobile underneath the search card
+.normal-page__sidebar {
+  grid-row: 3;
+
+  // Always show on desktop
+  @media screen and (min-width: 1024px) {
+    display: block;
+  }
+}
+
+.filters-card {
+  padding: var(--spacing-card-md);
+
+  @media screen and (min-width: 1024px) {
+    padding: var(--spacing-card-lg);
+  }
+}
+
+.sidebar-menu {
+  display: none;
+}
+
+.sidebar-menu_open {
+  display: block;
+}
+
+.sidebar-menu-heading {
+  margin: 1.5rem 0 0.5rem 0;
+}
+
+// EthicalAds
+.content-wrapper {
+  grid-row: 1;
+}
+
+.search-controls {
+  display: flex;
+  flex-direction: row;
+  gap: var(--spacing-card-md);
+  flex-wrap: wrap;
+  padding: var(--spacing-card-md);
+  grid-row: 2;
+
+  .search-filter-container {
+    display: flex;
+    width: 100%;
+    align-items: center;
+
+    .sidebar-menu-close-button {
+      max-height: none;
+      // match height of the search field
+      height: 40px;
+      transition: box-shadow 0.1s ease-in-out;
+      margin-right: var(--spacing-card-md);
+
+      &.open {
+        color: var(--color-button-text-active);
+        background-color: var(--color-brand-highlight);
+        box-shadow:
+          inset 0 0 0 transparent,
+          0 0 0 2px var(--color-brand);
+      }
+    }
+
+    .iconified-input {
+      flex: 1;
+
+      input {
+        width: 100%;
+        margin: 0;
+      }
+    }
+  }
+
+  .sort-controls {
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    gap: var(--spacing-card-md);
+    flex-wrap: wrap;
+    align-items: center;
+
+    .labeled-control {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+
+      .labeled-control__label {
+        white-space: nowrap;
+      }
+    }
+
+    .square-button {
+      margin-top: auto;
+      // match height of search dropdowns
+      height: 40px;
+      width: 40px; // make it square!
+    }
+  }
+}
+
+.search-controls__sorting {
+  min-width: 14rem;
+}
+
+.labeled-control__label,
+.labeled-control__control {
+  display: block;
+}
+
+.pagination-before {
+  grid-row: 4;
+}
+
+.search-results-container {
+  grid-row: 5;
+}
+
+.pagination-after {
+  grid-row: 6;
+}
+
+.no-results {
+  text-align: center;
+  display: flow-root;
+}
+
+.loading-logo {
+  margin: 2rem;
+}
+
+#search-results {
+  min-height: 20vh;
+}
+
+@media screen and (min-width: 750px) {
+  .search-controls {
+    flex-wrap: nowrap;
+    flex-direction: row;
+  }
+
+  .sort-controls {
+    min-width: fit-content;
+    max-width: fit-content;
+    flex-wrap: nowrap;
+  }
+
+  .labeled-control {
+    align-items: center;
+    display: flex;
+    flex-direction: column !important;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    max-width: fit-content;
+  }
+
+  .labeled-control__label {
+    flex-shrink: 0;
+    margin-bottom: 0 !important;
+  }
+}
+
+@media screen and (min-width: 860px) {
+  .labeled-control {
+    flex-wrap: nowrap !important;
+    flex-direction: row !important;
+  }
+}
+
+@media screen and (min-width: 1024px) {
+  .sidebar-menu {
+    display: block;
+    margin-top: 0;
+  }
+
+  .sidebar-menu-close-button {
+    display: none;
+  }
+
+  .labeled-control {
+    flex-wrap: wrap !important;
+    flex-direction: column !important;
+  }
+}
+
+@media screen and (min-width: 1100px) {
+  .labeled-control {
+    flex-wrap: nowrap !important;
+    flex-direction: row !important;
+  }
+}
+
+/* Banner 样式 */
+.banner-title {
+  color: #ffffff !important;
+  font-family:
+    "Space Grotesk",
+    var(--montserrat-font),
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+.banner-description {
+  color: #d1d5db !important;
+}
+
+.user-select-none {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+</style>
