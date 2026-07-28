@@ -1688,6 +1688,15 @@ NGINXDEFAULT
         fi
     fi
 
+    # ====== 关键修复: 强制确保 nginx.conf include vhost 目录 ======
+    if [[ -f "${NGINX_MAIN}" ]]; then
+        # 移除旧的 vhost include (避免重复), 再添加我们的
+        sed -i '/include.*vhost.*nginx/d' "${NGINX_MAIN}" 2>/dev/null || true
+        # 在 http { 后添加 include
+        sed -i '/http {/a\    include /www/server/panel/vhost/nginx/*.conf;' "${NGINX_MAIN}"
+        info "已确保 nginx.conf include vhost 目录"
+    fi
+
     # 0. 确保必要目录存在
     local nginx_conf_base
     nginx_conf_base=$(/usr/bin/dirname "${NGINX_MAIN}")
@@ -1769,12 +1778,6 @@ NGINXDEFAULT
             printf "# Auto-generated placeholder for modrinth include\n" > "${modrinth_conf}" 2>/dev/null || true
             info "  修复 modrinth.conf 缺失"
         fi
-    fi
-
-    # 2. 确保宝塔 vhost/nginx 目录被 nginx.conf include
-    if [[ -f "${NGINX_MAIN}" ]] && ! grep -q "vhost/nginx" "${NGINX_MAIN}" 2>/dev/null; then
-        warn "nginx.conf 未 include 宝塔 vhost/nginx 目录, 自动添加"
-        sed -i '/http {/a\    include /www/server/panel/vhost/nginx/*.conf;' "${NGINX_MAIN}"
     fi
 
     # 2.1 禁用宝塔默认 0.default.conf (它会拦截所有未匹配的请求)
@@ -3380,6 +3383,191 @@ reconfigure_third_party() {
     info "可随时运行 '$0 reconfigure' 重新配置"
 }
 
+# ---------------------- 诊断 ----------------------
+diagnose_all() {
+    step "系统诊断"
+
+    # 加载环境变量
+    local INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/bbsmc}"
+    local ENV_FILE="${INSTALL_DIR}/apps/labrinth/.env"
+    [[ ! -f "${ENV_FILE}" ]] && ENV_FILE="${INSTALL_DIR}/bin/.env"
+    if [[ -f "${ENV_FILE}" ]]; then
+        DOMAIN=$(grep "^DOMAIN=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+        API_SUBDOMAIN=$(grep "^API_SUBDOMAIN=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+        CDN_SUBDOMAIN=$(grep "^CDN_SUBDOMAIN=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+    fi
+    DOMAIN="${DOMAIN:-bbsmc.org.cn}"
+    API_DOMAIN="${API_DOMAIN:-${API_SUBDOMAIN:-api}.${DOMAIN}}"
+    CDN_DOMAIN="${CDN_DOMAIN:-${CDN_SUBDOMAIN:-cdn}.${DOMAIN}}"
+
+    local NGINX_CONF_DIR="/www/server/panel/vhost/nginx"
+    local nginx_bin
+    nginx_bin=$(command -v nginx 2>/dev/null || echo "/usr/sbin/nginx")
+
+    echo ""
+    echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  BBSMC 系统诊断报告${NC}"
+    echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    # 1. Nginx 状态
+    echo -e "${YELLOW}[1] Nginx 状态${NC}"
+    local nginx_status
+    nginx_status=$(systemctl is-active nginx 2>/dev/null || echo "inactive")
+    if [[ "${nginx_status}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} Nginx 运行中"
+    else
+        echo -e "  ${RED}✗${NC} Nginx 未运行 (状态: ${nginx_status})"
+        echo -e "    执行: systemctl start nginx"
+    fi
+
+    # 2. Nginx 配置路径
+    echo -e "${YELLOW}[2] Nginx 配置路径${NC}"
+    local nginx_main
+    nginx_main=$("${nginx_bin}" -V 2>&1 | grep -oP '\-\-conf-path=\K[^ ]+' 2>/dev/null || echo "/etc/nginx/nginx.conf")
+    echo "  nginx.conf: ${nginx_main}"
+    if [[ -f "${nginx_main}" ]]; then
+        echo -e "  ${GREEN}✓${NC} 配置文件存在"
+    else
+        echo -e "  ${RED}✗${NC} 配置文件不存在!"
+    fi
+
+    # 3. vhost include 检查
+    echo -e "${YELLOW}[3] vhost 目录 include 检查${NC}"
+    if [[ -f "${nginx_main}" ]]; then
+        if grep -q "vhost/nginx" "${nginx_main}" 2>/dev/null; then
+            echo -e "  ${GREEN}✓${NC} nginx.conf 已 include vhost/nginx 目录"
+            grep "vhost/nginx" "${nginx_main}" | while read line; do
+                echo "    ${line}"
+            done
+        else
+            echo -e "  ${RED}✗${NC} nginx.conf 未 include vhost/nginx 目录!"
+            echo -e "    执行: bash ${0} fix-nginx"
+        fi
+    fi
+
+    # 4. 0.default.conf 检查
+    echo -e "${YELLOW}[4] 默认站点冲突检查${NC}"
+    local default_conf="${NGINX_CONF_DIR}/0.default.conf"
+    if [[ -f "${default_conf}" ]]; then
+        echo -e "  ${RED}⚠${NC} 存在 ${default_conf} (会拦截所有请求!)"
+        echo -e "    执行: mv ${default_conf} ${default_conf}.disabled"
+        echo -e "    或:   bash ${0} fix-nginx"
+    else
+        local disabled_conf="${NGINX_CONF_DIR}/0.default.conf.disabled"
+        if [[ -f "${disabled_conf}" ]]; then
+            echo -e "  ${GREEN}✓${NC} 0.default.conf 已禁用"
+        else
+            echo -e "  ${GREEN}✓${NC} 无默认站点冲突"
+        fi
+    fi
+
+    # 5. vhost 配置文件列表
+    echo -e "${YELLOW}[5] vhost 配置文件${NC}"
+    if [[ -d "${NGINX_CONF_DIR}" ]]; then
+        local conf_count=0
+        for f in "${NGINX_CONF_DIR}"/*.conf; do
+            [[ -f "${f}" ]] || continue
+            local fname
+            fname=$(basename "${f}")
+            local server_names
+            server_names=$(grep -oP 'server_name\s+\K[^;]+' "${f}" 2>/dev/null | tr '\n' ',' || echo "")
+            local ports
+            ports=$(grep -oP 'listen\s+\K[^;]+' "${f}" 2>/dev/null | tr '\n' ',' || echo "")
+            if [[ "${fname}" == "0.default.conf" ]]; then
+                echo -e "  ${RED}⚠${NC} ${fname}: server_name=[${server_names}] listen=[${ports}]  ← 可能是元凶!"
+            elif [[ "${fname}" == _catch_all* ]]; then
+                echo -e "  ${GREEN}→${NC} ${fname}: server_name=[${server_names}] listen=[${ports}]  (兜底)"
+            else
+                echo -e "  ${GREEN}→${NC} ${fname}: server_name=[${server_names}] listen=[${ports}]"
+            fi
+            conf_count=$((conf_count + 1))
+        done
+        if [[ ${conf_count} -eq 0 ]]; then
+            echo -e "  ${RED}✗${NC} 无任何 vhost 配置文件!"
+            echo -e "    执行: bash ${0} fix-nginx"
+        fi
+    fi
+
+    # 6. Nginx 测试
+    echo -e "${YELLOW}[6] Nginx 配置测试${NC}"
+    local test_output
+    test_output=$("${nginx_bin}" -t 2>&1) || true
+    if echo "${test_output}" | grep -q "successful"; then
+        echo -e "  ${GREEN}✓${NC} 配置测试通过"
+    else
+        echo -e "  ${RED}✗${NC} 配置测试失败!"
+        echo "  ${test_output}"
+        echo -e "    执行: bash ${0} fix-nginx"
+    fi
+
+    # 7. 服务状态
+    echo -e "${YELLOW}[7] 后端/前端服务${NC}"
+    local backend_state frontend_state
+    backend_state=$(systemctl is-active bbsmc-labrinth 2>/dev/null || echo "inactive")
+    frontend_state=$(systemctl is-active bbsmc-frontend 2>/dev/null || echo "inactive")
+    if [[ "${backend_state}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} bbsmc-labrinth (API): active"
+    else
+        echo -e "  ${RED}✗${NC} bbsmc-labrinth (API): ${backend_state}"
+        echo -e "    执行: systemctl restart bbsmc-labrinth"
+    fi
+    if [[ "${frontend_state}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} bbsmc-frontend (前端): active"
+    else
+        echo -e "  ${RED}✗${NC} bbsmc-frontend (前端): ${frontend_state}"
+        echo -e "    执行: systemctl restart bbsmc-frontend"
+    fi
+
+    # 8. 本地端口测试
+    echo -e "${YELLOW}[8] 端口连通性${NC}"
+    local frontend_code backend_code
+    frontend_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 5 "http://127.0.0.1:3000" 2>/dev/null || echo "000")
+    backend_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 5 "http://127.0.0.1:8000/_internal/health" 2>/dev/null || echo "000")
+    if [[ "${frontend_code}" == "000" ]]; then
+        echo -e "  ${RED}✗${NC} 前端端口 3000: 无响应"
+    else
+        echo -e "  ${GREEN}✓${NC} 前端端口 3000: HTTP ${frontend_code}"
+    fi
+    if [[ "${backend_code}" == "000" ]]; then
+        echo -e "  ${RED}✗${NC} 后端端口 8000: 无响应"
+    else
+        echo -e "  ${GREEN}✓${NC} 后端端口 8000: HTTP ${backend_code}"
+    fi
+
+    # 9. SSL 证书
+    echo -e "${YELLOW}[9] SSL 证书状态${NC}"
+    for domain in "${DOMAIN}" "${API_DOMAIN}" "${CDN_DOMAIN}"; do
+        local cert_dir="/www/server/panel/vhost/cert/${domain}"
+        if [[ -d "${cert_dir}" ]]; then
+            local has_cert=0
+            for pattern in "fullchain.pem" "*bundle*" "*.crt"; do
+                local matches
+                matches=$(find "${cert_dir}" -name "${pattern}" 2>/dev/null | head -1)
+                if [[ -n "${matches}" ]]; then
+                    has_cert=1
+                    echo -e "  ${GREEN}✓${NC} ${domain}: ${matches}"
+                    break
+                fi
+            done
+            [[ ${has_cert} -eq 0 ]] && echo -e "  ${RED}✗${NC} ${domain}: 无证书文件"
+        else
+            echo -e "  ${RED}✗${NC} ${domain}: 证书目录不存在"
+        fi
+    done
+
+    # 总结
+    echo ""
+    echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "  ${YELLOW}快速修复命令:${NC}"
+    echo "    bash ${0} fix-nginx    # 修复 Nginx 配置"
+    echo "    bash ${0} apply-ssl   # 应用 SSL 证书"
+    echo "    journalctl -u bbsmc-frontend -n 50  # 查看前端日志"
+    echo "    journalctl -u bbsmc-labrinth -n 50  # 查看后端日志"
+    echo ""
+}
+
 # 辅助函数: 更新 .env 文件中的指定 key
 update_env_key() {
     local file="$1"
@@ -3429,6 +3617,11 @@ main() {
             echo "使用浏览器访问 https://${DOMAIN} 验证 SSL 是否生效"
             exit 0
             ;;
+        diagnose|diag|check)
+            # 诊断 Nginx 和网站问题
+            diagnose_all
+            exit 0
+            ;;
         install|"")
             ;;
         *)
@@ -3442,6 +3635,7 @@ main() {
             echo "  reconfigure  重新配置第三方服务 (OAuth/SMTP/支付)"
             echo "  fix-nginx    修复 Nginx 反代配置并启动"
             echo "  apply-ssl    应用 SSL 证书到 Nginx (检测已有或申请新证书)"
+            echo "  diagnose     系统诊断 (检查 Nginx/服务/端口/SSL 状态)"
             echo ""
             echo "环境变量:"
             echo "  DOMAIN              主域名 (如 bbsmc.org.cn)"
