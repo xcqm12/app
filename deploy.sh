@@ -3114,16 +3114,42 @@ print_summary() {
     echo -e "  ${YELLOW}登录后自动跳转至 /dashboard${NC}"
 
     echo ""
+    echo -e "${CYAN}──────────────── Web 管理后台 (需管理员权限) ────────────────${NC}"
+    echo ""
+    echo -e "  ${GREEN}管理后台首页:${NC}   https://${DOMAIN}/moderation"
+    echo -e "  ${GREEN}审核资源:${NC}       https://${DOMAIN}/moderation/review"
+    echo -e "  ${GREEN}举报管理:${NC}       https://${DOMAIN}/moderation/reports"
+    echo -e "  ${GREEN}翻译审核:${NC}       https://${DOMAIN}/moderation/translations"
+    echo -e "  ${GREEN}封禁申诉:${NC}       https://${DOMAIN}/moderation/appeals"
+    echo -e "  ${GREEN}资料审核:${NC}       https://${DOMAIN}/moderation/profile-reviews"
+    echo -e "  ${GREEN}图片审核:${NC}       https://${DOMAIN}/moderation/image-reviews"
+    echo ""
+    echo -e "  ${YELLOW}# 设置管理员账户${NC}"
+    echo -e "  bash ${INSTALL_DIR}/deploy.sh set-admin"
+    echo -e "  或手动: UPDATE users SET role='admin' WHERE username='你的用户名';"
+    echo ""
+    echo -e "  ${YELLOW}# 访问步骤${NC}"
+    echo -e "  1. 注册/登录账户: https://${DOMAIN}/login"
+    echo -e "  2. 提升为管理员: bash ${INSTALL_DIR}/deploy.sh set-admin"
+    echo -e "  3. 访问管理后台: https://${DOMAIN}/moderation"
+
+    echo ""
     echo -e "${CYAN}──────────────── 管理后台 API (Admin) ────────────────${NC}"
     echo ""
     echo -e "  ${GREEN}Admin Key:${NC}     ${ADMIN_KEY}"
     echo ""
-    echo -e "  ${YELLOW}# 内部管理接口 (需 Admin Key 认证)${NC}"
-    echo -e "  PATCH  https://${API_DOMAIN}/admin/_count-download"
-    echo -e "  POST   https://${API_DOMAIN}/admin/_force_reindex"
-    echo -e "  POST   https://${API_DOMAIN}/admin/_fix_modpack_loaders"
+    echo -e "  ${YELLOW}# 内部管理接口 (需 Modrinth-Admin 请求头认证)${NC}"
+    echo -e "  POST   https://${API_DOMAIN}/_internal/admin/_force_reindex"
+    echo -e "  POST   https://${API_DOMAIN}/_internal/admin/_fix_modpack_loaders"
+    echo -e "  PATCH  https://${API_DOMAIN}/_internal/admin/_count-download"
     echo ""
-    echo -e "  使用方式: curl -H 'Authorization: Bearer <ADMIN_KEY>' <URL>"
+    echo -e "  ${YELLOW}# v2 接口 (需 Modrinth-Admin 请求头认证)${NC}"
+    echo -e "  POST   https://${API_DOMAIN}/v2/admin/_force_reindex"
+    echo -e "  POST   https://${API_DOMAIN}/v2/admin/_fix_modpack_loaders"
+    echo -e "  PATCH  https://${API_DOMAIN}/v2/admin/_count-download"
+    echo ""
+    echo -e "  使用方式: curl -H 'Modrinth-Admin: <ADMIN_KEY>' <METHOD> <URL>"
+    echo -e "  例如: curl -X POST -H 'Modrinth-Admin: ${ADMIN_KEY}' https://${API_DOMAIN}/v2/admin/_force_reindex"
 
     echo ""
     echo -e "${CYAN}──────────────── 管理命令 (Management) ────────────────${NC}"
@@ -3193,6 +3219,20 @@ print_summary() {
     echo -e "  1. nginx -t (检查语法)"
     echo -e "  2. nginx -s reload (重新加载)"
     echo -e "  3. 检查是否有 0.default.conf 冲突: ls /www/server/panel/vhost/nginx/"
+    echo ""
+    echo -e "  ${RED}# 无法访问/登录管理后台?${NC}"
+    echo -e "  1. 检查账户角色: bash ${INSTALL_DIR}/deploy.sh verify-admin"
+    echo -e "  2. 设置管理员: bash ${INSTALL_DIR}/deploy.sh set-admin <用户名>"
+    echo -e "  3. 检查后端服务: systemctl status bbsmc-labrinth"
+    echo -e "  4. 前端登录页面: https://${DOMAIN}/login"
+    echo -e "  5. 管理后台地址: https://${DOMAIN}/moderation"
+    echo ""
+    echo -e "  ${RED}# Admin API 返回认证错误?${NC}"
+    echo -e "  正确的认证方式:"
+    echo -e "  - 使用请求头: Modrinth-Admin: <ADMIN_KEY>"
+    echo -e "  - 不要使用: Authorization: Bearer <ADMIN_KEY>"
+    echo -e "  示例: curl -X POST -H 'Modrinth-Admin: <KEY>' https://${API_DOMAIN}/v2/admin/_force_reindex"
+    echo -e "  查看 Admin Key: cat ${INSTALL_DIR}/deploy-credentials.txt | grep Admin"
 
     # 镜像模式额外说明
     if [[ "${MIRROR_MODE}" == "1" ]]; then
@@ -3827,7 +3867,344 @@ reconfigure_third_party() {
     info "可随时运行 '$0 reconfigure' 重新配置"
 }
 
-# ---------------------- 诊断 ----------------------
+# ---------------------- 管理员账户管理 ----------------------
+setup_admin_user() {
+    step "设置管理员账户"
+
+    local INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/bbsmc}"
+    local ENV_FILE="${INSTALL_DIR}/apps/labrinth/.env"
+    [[ ! -f "${ENV_FILE}" ]] && ENV_FILE="${INSTALL_DIR}/bin/.env"
+
+    # 加载环境变量
+    local DOMAIN="${DOMAIN:-bbsmc.org.cn}"
+    if [[ -f "${ENV_FILE}" ]]; then
+        DOMAIN=$(grep "^DOMAIN=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+        DOMAIN="${DOMAIN:-bbsmc.org.cn}"
+    fi
+
+    echo ""
+    echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  BBSMC 管理员账户设置${NC}"
+    echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    # 检查后端服务是否运行
+    if ! systemctl is-active bbsmc-labrinth &>/dev/null; then
+        echo -e "${RED}错误: bbsmc-labrinth 服务未运行${NC}"
+        echo -e "请先启动后端服务: systemctl start bbsmc-labrinth"
+        return 1
+    fi
+
+    # 检查数据库连接
+    local backend_code
+    backend_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 3 --max-time 5 "http://127.0.0.1:${BACKEND_PORT:-8000}/v2/tag/category" 2>/dev/null || echo "000")
+    if [[ "${backend_code}" == "000" ]] || [[ "${backend_code}" == "502" ]]; then
+        echo -e "${RED}错误: 后端 API 不可达 (HTTP ${backend_code})${NC}"
+        echo -e "请检查: systemctl status bbsmc-labrinth"
+        return 1
+    fi
+
+    # 交互式输入用户名
+    local username
+    if [[ -n "$1" ]]; then
+        username="$1"
+    else
+        read -rp "输入要设为管理员的用户名: " username
+    fi
+
+    if [[ -z "${username}" ]]; then
+        echo -e "${RED}错误: 用户名不能为空${NC}"
+        return 1
+    fi
+
+    # 连接数据库更新角色
+    if [[ -f "${ENV_FILE}" ]]; then
+        local pg_pass pg_host pg_user pg_db
+        pg_pass=$(grep "^PG_PASS=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+        pg_host=$(grep "^PG_HOST=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "' | cut -d: -f1)
+        pg_user=$(grep "^PG_USER=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+        pg_db=$(grep "^PG_DB=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+        pg_host="${pg_host:-127.0.0.1}"
+        pg_user="${pg_user:-labrinth}"
+        pg_db="${pg_db:-labrinth}"
+
+        if command -v psql &>/dev/null; then
+            echo ""
+            echo -e "${YELLOW}正在查询用户信息...${NC}"
+
+            local user_info
+            user_info=$(PGPASSWORD="${pg_pass}" psql -h "${pg_host}" -U "${pg_user}" -d "${pg_db}" \
+                -t -A -c "SELECT id, username, role FROM users WHERE username = '${username}';" 2>/dev/null)
+
+            if [[ -z "${user_info}" ]]; then
+                echo -e "${RED}错误: 用户 '${username}' 不存在${NC}"
+                echo -e "请先在前端注册账户: https://${DOMAIN}/register"
+                return 1
+            fi
+
+            local user_id user_name current_role
+            user_id=$(echo "${user_info}" | cut -d'|' -f1)
+            user_name=$(echo "${user_info}" | cut -d'|' -f2)
+            current_role=$(echo "${user_info}" | cut -d'|' -f3)
+
+            echo -e "  用户 ID: ${user_id}"
+            echo -e "  用户名: ${user_name}"
+            echo -e "  当前角色: ${current_role}"
+
+            if [[ "${current_role}" == "admin" ]]; then
+                echo ""
+                echo -e "${GREEN}该用户已经是管理员!${NC}"
+                echo ""
+                echo -e "${YELLOW}管理后台地址:${NC} https://${DOMAIN}/moderation"
+                return 0
+            fi
+
+            echo ""
+            if [[ -n "$2" ]] && [[ "$2" == "--confirm" ]]; then
+                echo "自动确认模式"
+            else
+                read -rp "确认将 '${username}' 设为管理员? [y/N]: " confirm
+                if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
+                    echo "已取消"
+                    return 0
+                fi
+            fi
+
+            echo ""
+            echo -e "${YELLOW}正在更新用户角色...${NC}"
+
+            PGPASSWORD="${pg_pass}" psql -h "${pg_host}" -U "${pg_user}" -d "${pg_db}" \
+                -c "UPDATE users SET role = 'admin' WHERE username = '${username}';" 2>/dev/null
+
+            if [[ $? -eq 0 ]]; then
+                echo ""
+                echo -e "${GREEN}══════════════════════════════════════════════════════════${NC}"
+                echo -e "${GREEN}  ✓ 管理员账户设置成功!${NC}"
+                echo -e "${GREEN}══════════════════════════════════════════════════════════${NC}"
+                echo ""
+                echo -e "${CYAN}访问步骤:${NC}"
+                echo -e "  1. 登录账户: https://${DOMAIN}/login"
+                echo -e "  2. 访问管理后台: https://${DOMAIN}/moderation"
+                echo ""
+                echo -e "${CYAN}可用管理功能:${NC}"
+                echo -e "  ✓ 审核资源 (moderation/review)"
+                echo -e "  ✓ 举报管理 (moderation/reports)"
+                echo -e "  ✓ 封禁申诉 (moderation/appeals)"
+                echo -e "  ✓ 翻译审核 (moderation/translations)"
+                echo -e "  ✓ 资料审核 (moderation/profile-reviews)"
+                echo -e "  ✓ 图片审核 (moderation/image-reviews)"
+                echo -e "  ✓ 高级创作者 (moderation/creators)"
+            else
+                echo -e "${RED}错误: 更新失败${NC}"
+                echo -e "请手动执行:"
+                echo -e "  PGPASSWORD='${pg_pass}' psql -h ${pg_host} -U ${pg_user} -d ${pg_db}"
+                echo -e "  UPDATE users SET role = 'admin' WHERE username = '${username}';"
+                return 1
+            fi
+        else
+            echo -e "${YELLOW}psql 未安装, 请手动设置管理员:${NC}"
+            echo ""
+            echo "  1. 安装 psql 客户端:"
+            echo "     apt-get install -y postgresql-client"
+            echo ""
+            echo "  2. 或使用 Docker 容器:"
+            echo "     docker exec -it postgres_db psql -U ${pg_user} -d ${pg_db}"
+            echo "     UPDATE users SET role = 'admin' WHERE username = '${username}';"
+            echo ""
+            echo "  3. 获取 .env 中的密码:"
+            echo "     grep PG_PASS ${ENV_FILE}"
+            return 1
+        fi
+    else
+        echo -e "${RED}错误: 未找到 .env 文件${NC}"
+        echo -e "请先运行部署: bash ${0} install"
+        return 1
+    fi
+}
+
+verify_admin_access() {
+    step "验证后台访问"
+
+    local INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/bbsmc}"
+    local ENV_FILE="${INSTALL_DIR}/apps/labrinth/.env"
+    [[ ! -f "${ENV_FILE}" ]] && ENV_FILE="${INSTALL_DIR}/bin/.env"
+
+    local DOMAIN="${DOMAIN:-bbsmc.org.cn}"
+    local API_DOMAIN="${API_DOMAIN:-api.${DOMAIN}}"
+    local FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+    local BACKEND_PORT="${BACKEND_PORT:-8000}"
+
+    if [[ -f "${ENV_FILE}" ]]; then
+        DOMAIN=$(grep "^DOMAIN=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+        API_SUBDOMAIN=$(grep "^API_SUBDOMAIN=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+        DOMAIN="${DOMAIN:-bbsmc.org.cn}"
+        API_DOMAIN="${API_DOMAIN:-${API_SUBDOMAIN:-api}.${DOMAIN}}"
+        FRONTEND_PORT=$(grep "^FRONTEND_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "' )
+        BACKEND_PORT=$(grep "^BACKEND_PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d ' "' )
+        FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+        BACKEND_PORT="${BACKEND_PORT:-8000}"
+    fi
+
+    echo ""
+    echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  BBSMC 后台访问验证${NC}"
+    echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    local all_ok=1
+
+    # 1. 后端服务状态
+    echo -e "${YELLOW}[1] 后端服务 (bbsmc-labrinth)${NC}"
+    local backend_state
+    backend_state=$(systemctl is-active bbsmc-labrinth 2>/dev/null || echo "inactive")
+    if [[ "${backend_state}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} 运行中"
+    else
+        echo -e "  ${RED}✗${NC} 未运行 (${backend_state})"
+        echo -e "    执行: systemctl start bbsmc-labrinth"
+        all_ok=0
+    fi
+
+    # 2. 前端服务状态
+    echo -e "${YELLOW}[2] 前端服务 (bbsmc-frontend)${NC}"
+    local frontend_state
+    frontend_state=$(systemctl is-active bbsmc-frontend 2>/dev/null || echo "inactive")
+    if [[ "${frontend_state}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} 运行中"
+    else
+        echo -e "  ${RED}✗${NC} 未运行 (${frontend_state})"
+        echo -e "    执行: systemctl start bbsmc-frontend"
+        all_ok=0
+    fi
+
+    # 3. Nginx 状态
+    echo -e "${YELLOW}[3] Nginx 服务${NC}"
+    local nginx_state
+    nginx_state=$(systemctl is-active nginx 2>/dev/null || echo "inactive")
+    if [[ "${nginx_state}" == "active" ]]; then
+        echo -e "  ${GREEN}✓${NC} 运行中"
+    else
+        echo -e "  ${RED}✗${NC} 未运行 (${nginx_state})"
+        echo -e "    执行: systemctl start nginx"
+        all_ok=0
+    fi
+
+    # 4. 后端 API 可访问性
+    echo -e "${YELLOW}[4] 后端 API 检查${NC}"
+    local backend_code
+    backend_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 3 --max-time 5 "http://127.0.0.1:${BACKEND_PORT}/v2/tag/category" 2>/dev/null || echo "000")
+    if [[ "${backend_code}" == "200" ]] || [[ "${backend_code}" == "401" ]] || [[ "${backend_code}" == "403" ]]; then
+        echo -e "  ${GREEN}✓${NC} 本地 API 可达 (HTTP ${backend_code})"
+    else
+        echo -e "  ${RED}✗${NC} 本地 API 不可达 (HTTP ${backend_code})"
+        all_ok=0
+    fi
+
+    # 5. 前端可访问性
+    echo -e "${YELLOW}[5] 前端服务检查${NC}"
+    local frontend_code
+    frontend_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 3 --max-time 5 "http://127.0.0.1:${FRONTEND_PORT}" 2>/dev/null || echo "000")
+    if [[ "${frontend_code}" == "200" ]] || [[ "${frontend_code}" == "301" ]] || [[ "${frontend_code}" == "302" ]]; then
+        echo -e "  ${GREEN}✓${NC} 本地前端可达 (HTTP ${frontend_code})"
+    else
+        echo -e "  ${RED}✗${NC} 本地前端不可达 (HTTP ${frontend_code})"
+        all_ok=0
+    fi
+
+    # 6. Nginx 反代配置检查
+    echo -e "${YELLOW}[6] Nginx 反代配置${NC}"
+    local nginx_conf="/www/server/panel/vhost/nginx/${DOMAIN}.conf"
+    if [[ -f "${nginx_conf}" ]]; then
+        echo -e "  ${GREEN}✓${NC} 主站配置存在"
+    else
+        echo -e "  ${RED}✗${NC} 主站配置不存在"
+        all_ok=0
+    fi
+
+    local api_conf="/www/server/panel/vhost/nginx/${API_DOMAIN}.conf"
+    if [[ -f "${api_conf}" ]]; then
+        echo -e "  ${GREEN}✓${NC} API 配置存在"
+    else
+        echo -e "  ${RED}✗${NC} API 配置不存在"
+        all_ok=0
+    fi
+
+    # 7. Admin API 认证验证
+    echo -e "${YELLOW}[7] Admin API 认证检查${NC}"
+    local admin_key=""
+    if [[ -f "${INSTALL_DIR}/bin/.env" ]]; then
+        admin_key=$(grep "^LABRINTH_ADMIN_KEY=" "${INSTALL_DIR}/bin/.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+    fi
+    if [[ -z "${admin_key}" ]] && [[ -f "${INSTALL_DIR}/apps/labrinth/.env" ]]; then
+        admin_key=$(grep "^LABRINTH_ADMIN_KEY=" "${INSTALL_DIR}/apps/labrinth/.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')
+    fi
+
+    if [[ -n "${admin_key}" ]]; then
+        local admin_test_code
+        admin_test_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            --connect-timeout 3 --max-time 5 \
+            -X POST \
+            -H "Modrinth-Admin: ${admin_key}" \
+            -H "Content-Type: application/json" \
+            "http://127.0.0.1:${BACKEND_PORT}/_internal/admin/_force_reindex" 2>/dev/null || echo "000")
+        if [[ "${admin_test_code}" == "200" ]] || [[ "${admin_test_code}" == "202" ]]; then
+            echo -e "  ${GREEN}✓${NC} Admin API 认证成功 (HTTP ${admin_test_code})"
+        elif [[ "${admin_test_code}" == "401" ]] || [[ "${admin_test_code}" == "403" ]]; then
+            echo -e "  ${RED}✗${NC} Admin Key 无效 (HTTP ${admin_test_code})"
+        else
+            echo -e "  ${YELLOW}⚠${NC} Admin API 测试返回 HTTP ${admin_test_code} (可能正常)"
+        fi
+    else
+        echo -e "  ${YELLOW}⚠${NC} 未找到 Admin Key, 跳过验证"
+    fi
+
+    # 8. HTTPS 域名检查 (可选)
+    echo -e "${YELLOW}[8] 域名 HTTPS 检查 (可选)${NC}"
+    if command -v curl &>/dev/null; then
+        local https_code
+        https_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            --connect-timeout 3 --max-time 5 -k \
+            "https://${DOMAIN}" 2>/dev/null || echo "000")
+        if [[ "${https_code}" == "200" ]] || [[ "${https_code}" == "301" ]] || [[ "${https_code}" == "302" ]]; then
+            echo -e "  ${GREEN}✓${NC} HTTPS 主站可达 (HTTP ${https_code})"
+        elif [[ "${https_code}" == "000" ]]; then
+            echo -e "  ${YELLOW}⚠${NC} HTTPS 不可达 (可能 DNS 未解析或无证书)"
+        else
+            echo -e "  ${RED}✗${NC} HTTPS 返回错误 (HTTP ${https_code})"
+            all_ok=0
+        fi
+    else
+        echo -e "  ${YELLOW}⚠${NC} curl 不可用, 跳过 HTTPS 检查"
+    fi
+
+    # 汇总报告
+    echo ""
+    echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+    if [[ ${all_ok} -eq 1 ]]; then
+        echo -e "${GREEN}  ✓ 所有检查通过!${NC}"
+        echo -e "${GREEN}══════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "${CYAN}管理后台访问信息:${NC}"
+        echo -e "  ${GREEN}管理后台:${NC}   https://${DOMAIN}/moderation"
+        echo -e "  ${GREEN}登录地址:${NC}   https://${DOMAIN}/login"
+        echo -e "  ${GREEN}仪表盘:${NC}    https://${DOMAIN}/dashboard"
+        echo ""
+        echo -e "${YELLOW}注意: 首次使用需要注册账户并提升为管理员${NC}"
+        echo -e "  注册: https://${DOMAIN}/register"
+        echo -e "  提升: bash ${INSTALL_DIR}/deploy.sh set-admin <用户名>"
+    else
+        echo -e "${RED}  ✗ 部分检查未通过, 请检查上方错误${NC}"
+        echo -e "${RED}══════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "${YELLOW}快速修复命令:${NC}"
+        echo -e "  bash ${INSTALL_DIR}/deploy.sh diagnose    # 详细诊断"
+        echo -e "  bash ${INSTALL_DIR}/deploy.sh fix-nginx    # 修复 Nginx"
+        echo -e "  bash ${INSTALL_DIR}/deploy.sh apply-ssl    # 应用 SSL"
+    fi
+}
 diagnose_all() {
     step "系统诊断"
 
@@ -4066,6 +4443,17 @@ main() {
             diagnose_all
             exit 0
             ;;
+        set-admin|admin)
+            # 设置管理员账户 (可接受用户名作为参数)
+            shift
+            setup_admin_user "$@"
+            exit 0
+            ;;
+        verify-admin|check-admin)
+            # 验证后台访问
+            verify_admin_access
+            exit 0
+            ;;
         install|"")
             ;;
         *)
@@ -4080,6 +4468,9 @@ main() {
             echo "  fix-nginx    修复 Nginx 反代配置并启动"
             echo "  apply-ssl    应用 SSL 证书到 Nginx (检测已有或申请新证书)"
             echo "  diagnose     系统诊断 (检查 Nginx/服务/端口/SSL 状态)"
+            echo "  set-admin    设置管理员账户 (提升用户为 admin 角色)"
+            echo "               用法: bash $0 set-admin <用户名> [--confirm]"
+            echo "  verify-admin 验证后台访问 (检查后端/前端/API 状态)"
             echo ""
             echo "环境变量:"
             echo "  DOMAIN              主域名 (如 bbsmc.org.cn)"
