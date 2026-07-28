@@ -1045,6 +1045,9 @@ DEBUG=false
 RUST_LOG=info,sqlx::query=warn,actix_web=info
 SENTRY_DSN=none
 
+# 站点基础 URL (可选, fail-open)
+#   - 仅用于风控告警通知卡片中的跳转链接
+#   - 缺失/为空时, 风控检测照常执行, 仅告警卡片缺少 URL
 SITE_URL=https://${DOMAIN}
 CDN_URL=https://${CDN_DOMAIN}/bbsmc
 CDN_PRIVATE_URL=none
@@ -1168,6 +1171,10 @@ PYRO_API_KEY=none
 
 DEV=false
 
+# 飞书机器人 Webhook (可选, best-effort)
+#   - 用于文本/图片风控告警通知
+#   - 设为 none / 留空 / 缺失: 跳过发送, 不影响任何业务流程 (fail-open)
+#   - 配置格式: https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
 FEISHU_BOT_WEBHOOK=none
 
 ALIYUN_SMS_ACCESS_KEYID=none
@@ -1176,6 +1183,10 @@ ALIYUN_SMS_REGION=none
 ALIYUN_SMS_REPORT_TEMPLETE_CODE=none
 ALIYUN_SMS_SIGN_NAME=none
 
+# 火山引擎风控 AK/SK (可选, fail-open)
+#   - 用于用户名、项目描述、图片等内容安全检测
+#   - 设为 none / 留空 / 缺失: 跳过风控检测, 直接放行, 不影响注册/发布等核心流程
+#   - 控制台地址: https://console.volcengine.com/iam/keymanage
 HUOSHAN_AK=none
 HUOSHAN_SK=none
 
@@ -1467,12 +1478,32 @@ setup_systemd_labrinth() {
 
     # 验证 .env 关键字段
     info "验证 bin/.env 配置..."
-    local env_checks=("SITE_URL" "DATABASE_URL" "STORAGE_BACKEND" "BIND_ADDR" "LABRINTH_ADMIN_KEY")
-    for var in "${env_checks[@]}"; do
+    # 必需字段 (缺失会影响核心功能)
+    local required_env_checks=("DATABASE_URL" "STORAGE_BACKEND" "BIND_ADDR" "LABRINTH_ADMIN_KEY")
+    for var in "${required_env_checks[@]}"; do
         local val
         val=$(grep "^${var}=" "${INSTALL_DIR}/bin/.env" 2>/dev/null | cut -d= -f2)
         if [[ -z "${val}" ]]; then
-            warn ".env 中缺少 ${var}"
+            warn ".env 中缺少 ${var} (核心功能必需)"
+        fi
+    done
+    # 可选字段 (缺失采用 fail-open, 不阻塞核心功能)
+    local optional_env_checks=("SITE_URL" "HUOSHAN_AK" "HUOSHAN_SK" "FEISHU_BOT_WEBHOOK")
+    for var in "${optional_env_checks[@]}"; do
+        local val
+        val=$(grep "^${var}=" "${INSTALL_DIR}/bin/.env" 2>/dev/null | cut -d= -f2)
+        if [[ -z "${val}" ]] || [[ "${val}" == "none" ]]; then
+            case "${var}" in
+                SITE_URL)
+                    info "  .env 中 SITE_URL 未配置: 风控告警卡片中的链接将为空 (不影响业务)"
+                    ;;
+                HUOSHAN_AK|HUOSHAN_SK)
+                    info "  .env 中 ${var} 未配置: 跳过火山引擎内容风控检测, 注册/发布直接放行 (fail-open)"
+                    ;;
+                FEISHU_BOT_WEBHOOK)
+                    info "  .env 中 FEISHU_BOT_WEBHOOK 未配置: 不发送风控飞书告警通知 (best-effort)"
+                    ;;
+            esac
         fi
     done
 
@@ -2763,8 +2794,9 @@ server {
 
     # ====== 本地路由: 用户/认证/上传相关 (所有方法都走本地) ======
     location ~ ^/v[0-9]+/(auth|user|session|pat|oauth|notifications|report|thread|billing|payout|collections) {
-        # API 兼容性重写: 前端可能请求 /v2/auth/register, 后端实际路由为 /v2/auth/create_account_with_password
-        rewrite ^/v[0-9]+/auth/register$ /v2/auth/create_account_with_password break;
+        # API 兼容性重写: 旧前端/第三方可能请求 /v2/auth/register 或 /v2/auth/create_account_with_password
+        #   后端实际路由为 /v2/auth/create (函数注解 #[post("create")])
+        rewrite ^/v[0-9]+/auth/(register|create_account_with_password)$ /v2/auth/create last;
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
         proxy_set_header Host ${API_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
@@ -3014,6 +3046,38 @@ post_deploy_verify() {
     # 7. 验证 Docker 数据库
     info "检查数据库容器..."
     docker compose -f "${INSTALL_DIR}/docker-compose.prod.yml" ps 2>/dev/null || true
+
+    # 8. 验证注册接口不再出现 reroute_error (核心回归测试)
+    info "检查注册接口路由和错误模式..."
+    local auth_body='{"username":"deploy_verify_user_'"$(date +%s)"'","email":"verify_'"$(date +%s)"'@example.com","password":"Verify123!@#","challenge":"deploy_verify"}'
+    local auth_resp
+    local auth_http
+    auth_http=$(curl -s -o /tmp/bbsmc_auth_resp.json -w "%{http_code}" \
+        --connect-timeout 3 --max-time 8 \
+        -X POST -H "Content-Type: application/json" \
+        -d "${auth_body}" \
+        "http://127.0.0.1:${BACKEND_PORT}/v2/auth/create" 2>/dev/null || echo "000")
+    auth_resp=""
+    [[ -f /tmp/bbsmc_auth_resp.json ]] && auth_resp=$(cat /tmp/bbsmc_auth_resp.json 2>/dev/null || echo "")
+
+    if [[ "${auth_http}" == "000" ]]; then
+        warn "  注册接口 (v2/auth/create): 无法连接后端 (HTTP ${auth_http}) ✗"
+        all_ok=0
+    elif echo "${auth_resp}" | grep -q "reroute_error"; then
+        warn "  注册接口 (v2/auth/create): 返回 reroute_error! (HTTP ${auth_http}) ✗"
+        warn "    响应: ${auth_resp}"
+        warn "    可能原因: 旧版本后端二进制; 需要重新 cargo build 部署最新 risk.rs 修复"
+        all_ok=0
+    else
+        # 正常返回 (HTTP 400 用户名已存在/密码复杂度不足 也算通过)
+        local rerr
+        rerr=$(echo "${auth_resp}" | grep -oE '"error"\s*:\s*"[^"]+"' | head -1)
+        info "  注册接口 (v2/auth/create): HTTP ${auth_http} ✓"
+        if [[ -n "${rerr}" ]]; then
+            info "    业务错误 (可接受): ${rerr}"
+        fi
+    fi
+    rm -f /tmp/bbsmc_auth_resp.json 2>/dev/null || true
 
     echo ""
     if [[ ${all_ok} -eq 1 ]]; then
