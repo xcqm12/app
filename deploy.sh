@@ -6,6 +6,61 @@
 # ============================================================================
 set -eo pipefail
 
+# ---------------------- 安全初始化: 所有可选变量默认值 ----------------------
+# 防止 set -u (或用户环境中 set -u) 导致 unbound variable 错误
+: "${DOMAIN:=}"
+: "${API_SUBDOMAIN:=api}"
+: "${CDN_SUBDOMAIN:=cdn}"
+: "${INSTALL_DIR:=/www/wwwroot/bbsmc}"
+: "${DATA_DIR:=/www/wwwroot/bbsmc-data}"
+: "${REPO_URL:=https://github.com/xcqm12/app.git}"
+: "${REPO_BRANCH:=main}"
+: "${AUTO_ACCEPT:=0}"
+: "${SKIP_BUILD_PREPARE:=0}"
+: "${MIRROR_MODE:=0}"
+: "${MIRROR_INPUT:=}"
+: "${THIRD_PARTY_INPUT:=}"
+: "${PAY_INPUT:=}"
+: "${CONFIRM:=}"
+: "${INPUT:=}"
+: "${CPU_CORES:=}"
+: "${TOTAL_MEM:=}"
+
+# 数据库/加密密码
+: "${PG_PASS:=}"
+: "${MEILI_KEY:=}"
+: "${REDIS_PASS:=}"
+: "${CH_PASS:=}"
+: "${ADMIN_KEY:=}"
+: "${ENCRYPTION_KEY:=}"
+
+# OAuth 配置
+: "${GITHUB_CLIENT_ID:=}"
+: "${GITHUB_CLIENT_SECRET:=}"
+: "${MICROSOFT_CLIENT_ID:=}"
+: "${MICROSOFT_CLIENT_SECRET:=}"
+: "${GITLAB_CLIENT_ID:=}"
+: "${GITLAB_CLIENT_SECRET:=}"
+: "${DISCORD_CLIENT_ID:=}"
+: "${DISCORD_CLIENT_SECRET:=}"
+: "${GOOGLE_CLIENT_ID:=}"
+: "${GOOGLE_CLIENT_SECRET:=}"
+: "${BILIBILI_CLIENT_ID:=}"
+: "${BILIBILI_CLIENT_SECRET:=}"
+: "${QQ_CLIENT_ID:=}"
+: "${QQ_CLIENT_SECRET:=}"
+
+# SMTP 配置
+: "${SMTP_HOST:=}"
+: "${SMTP_USERNAME:=}"
+: "${SMTP_PASSWORD:=}"
+
+# 支付配置
+: "${PAYPAL_CLIENT_ID:=}"
+: "${PAYPAL_CLIENT_SECRET:=}"
+: "${STRIPE_API_KEY:=}"
+: "${STRIPE_WEBHOOK_SECRET:=}"
+
 # ---------------------- 颜色输出 ----------------------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -15,27 +70,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step()  { echo -e "\n${CYAN}=====> $* <=====${NC}"; }
 
 # ---------------------- 默认配置 ----------------------
-# 会被用户输入或环境变量覆盖
-DOMAIN="${DOMAIN:-}"
-API_SUBDOMAIN="${API_SUBDOMAIN:-api}"
-CDN_SUBDOMAIN="${CDN_SUBDOMAIN:-cdn}"
-INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/bbsmc}"
-DATA_DIR="${DATA_DIR:-/www/wwwroot/bbsmc-data}"
-REPO_URL="${REPO_URL:-https://github.com/xcqm12/app.git}"
-REPO_BRANCH="${REPO_BRANCH:-main}"
-AUTO_ACCEPT="${AUTO_ACCEPT:-0}"
-SKIP_BUILD_PREPARE="${SKIP_BUILD_PREPARE:-0}"
+# 会被用户输入或环境变量覆盖 (顶部已通过 : "${VAR:=}" 初始化)
 
 # 数据库密码（自动生成或从已有凭据恢复）
 CREDENTIALS_FILE="${INSTALL_DIR}/deploy-credentials.txt"
-
-# 初始化密码变量 (支持通过环境变量预置)
-PG_PASS="${PG_PASS:-}"
-MEILI_KEY="${MEILI_KEY:-}"
-REDIS_PASS="${REDIS_PASS:-}"
-CH_PASS="${CH_PASS:-}"
-ADMIN_KEY="${ADMIN_KEY:-}"
-ENCRYPTION_KEY="${ENCRYPTION_KEY:-}"
 
 # 如果已有凭据文件, 从中提取密码 (避免重新部署时密码变更导致认证失败)
 if [[ -f "${CREDENTIALS_FILE}" ]]; then
