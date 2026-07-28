@@ -1588,24 +1588,32 @@ cleanup_problematic_configs() {
     # 检查所有 .conf 文件中的 include 是否引用了不存在的文件
     for conf in "${NGINX_CONF_DIR}"/*.conf; do
         [[ -f "${conf}" ]] || continue
-        # 提取所有 include 行
-        local includes
-        includes=$(grep -oP 'include\s+\K[^;]+' "${conf}" 2>/dev/null || true)
-        for inc in ${includes}; do
+
+        # 逐行扫描 include (跳过注释行, 正确提取路径)
+        while IFS= read -r line; do
+            # 跳过空行和注释行
+            [[ -z "${line}" ]] && continue
+            [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+
+            # 提取 include 后面的路径 (到 ; 为止)
+            local inc_path
+            inc_path=$(echo "${line}" | grep -oP 'include\s+\K[^;]+' 2>/dev/null | head -1 | tr -d ' ')
+            [[ -z "${inc_path}" ]] && continue
+
             # 跳过通配符
-            [[ "${inc}" == *"*"* ]] && continue
+            [[ "${inc_path}" == *"*"* ]] && continue
             # 跳过包含变量
-            [[ "${inc}" == *'$'* ]] && continue
-            if [[ ! -f "${inc}" ]]; then
-                # 如果是 fastcgi_params 或其他 nginx 标准文件, 创建占位
+            [[ "${inc_path}" == *'$'* ]] && continue
+
+            if [[ ! -f "${inc_path}" ]]; then
                 local basename_inc
-                basename_inc=$(basename "${inc}")
+                basename_inc=$(basename "${inc_path}")
                 case "${basename_inc}" in
                     fastcgi_params|fastcgi.conf|scgi_params|uwsgi_params)
-                        if [[ ! -f "${inc}" ]]; then
-                            warn "创建 ${inc} 占位文件"
-                            mkdir -p "$(dirname "${inc}")" 2>/dev/null || true
-                            cat > "${inc}" << 'FASTCGISTD'
+                        if [[ ! -f "${inc_path}" ]]; then
+                            warn "创建 ${inc_path} 占位文件"
+                            mkdir -p "$(dirname "${inc_path}")" 2>/dev/null || true
+                            cat > "${inc_path}" << 'FASTCGISTD'
 fastcgi_param QUERY_STRING       $query_string;
 fastcgi_param REQUEST_METHOD     $request_method;
 fastcgi_param CONTENT_TYPE       $content_type;
@@ -1625,12 +1633,12 @@ FASTCGISTD
                         fi
                         ;;
                     *)
-                        warn "  ${conf} 引用不存在的文件: ${inc}, 注释掉"
-                        sed -i "s|include ${inc}|# include ${inc} # disabled by BBSMC deploy|" "${conf}" 2>/dev/null || true
+                        warn "  ${conf} 引用不存在的文件: ${inc_path}, 注释掉"
+                        sed -i "s|^[[:space:]]*include ${inc_path}|# include ${inc_path} # disabled by BBSMC deploy|" "${conf}" 2>/dev/null || true
                         ;;
                 esac
             fi
-        done
+        done < <(grep -n 'include[[:space:]]' "${conf}" 2>/dev/null || true)
     done
 
     return 0
@@ -1775,7 +1783,121 @@ fix_nginx_http2_compat() {
     return 0
 }
 
-# ---------------------- Nginx 反代 (宝塔) ----------------------
+# ---------------------- Nginx QUIC 指令清理 ----------------------
+# nginx < 1.25.1 不支持 quic 参数, 移除它
+# 同时修复之前被损坏的配置文件
+fix_quic_and_corrupted() {
+    local NGINX_CONF_DIR="${1:-/www/server/panel/vhost/nginx}"
+    local nginx_bin
+    nginx_bin=$(command -v nginx 2>/dev/null || echo "/usr/sbin/nginx")
+
+    detect_nginx_version
+
+    [[ -d "${NGINX_CONF_DIR}" ]] || return 0
+
+    for conf in "${NGINX_CONF_DIR}"/*.conf; do
+        [[ -f "${conf}" ]] || continue
+        local needs_fix=0
+
+        # 1. 移除 quic 参数 (nginx < 1.25.1 不支持)
+        if [[ ${NGINX_MAJOR} -lt 2 ]] && [[ ${NGINX_MINOR} -lt 25 ]]; then
+            if grep -q 'quic' "${conf}" 2>/dev/null; then
+                needs_fix=1
+                warn "  ${conf}: 移除 quic 参数 (nginx ${NGINX_VERSION} 不支持)"
+                # 移除 listen 行中的 quic 单词
+                sed -i 's/\(listen[[:space:]]\+[^;]*\)[[:space:]]\+quic/\1/g' "${conf}" 2>/dev/null || true
+                # 移除独立的 quic 指令行
+                sed -i '/^[[:space:]]*quic[[:space:]]*on[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+                sed -i '/^[[:space:]]*quic[[:space:]]*;/d' "${conf}" 2>/dev/null || true
+            fi
+        fi
+
+        # 2. 修复被之前损坏的配置文件 (之前 cleanup 脚本错误注释导致的)
+        # 检查是否有损坏的注释行: "# include # disabled by BBSMC deploy" (路径为空)
+        if grep -q '# include # disabled by BBSMC deploy' "${conf}" 2>/dev/null; then
+            needs_fix=1
+            warn "  ${conf}: 恢复被损坏的配置行"
+            # 删除空的损坏注释行
+            sed -i '/# include # disabled by BBSMC deploy/d' "${conf}" 2>/dev/null || true
+        fi
+
+        # 3. 恢复被错误注释掉的有效 include (如果注释中包含有效路径)
+        # 格式: "# include /path/to/file # disabled by BBSMC deploy"
+        # 恢复为: "include /path/to/file;"
+        while IFS= read -r badline; do
+            local goodpath
+            goodpath=$(echo "${badline}" | grep -oP '# include\s+\K[^#]+' 2>/dev/null | tr -d ' ')
+            if [[ -n "${goodpath}" ]] && [[ -f "${goodpath}" ]]; then
+                warn "  ${conf}: 恢复 include ${goodpath}"
+                # 将注释行恢复为正常的 include
+                local escaped_path
+                escaped_path=$(echo "${goodpath}" | sed 's/[.[\*^$+?{|()]/\\&/g')
+                sed -i "s|# include ${escaped_path} # disabled by BBSMC deploy|include ${goodpath};|" "${conf}" 2>/dev/null || true
+            else
+                # 文件不存在, 直接删除这行 (保持注释)
+                sed -i "s|# include ${escaped_path} # disabled by BBSMC deploy||" "${conf}" 2>/dev/null || true
+            fi
+        done < <(grep 'disabled by BBSMC deploy' "${conf}" 2>/dev/null || true)
+
+        # 4. 清理空行 (删除因恢复/删除操作留下的空行)
+        if [[ ${needs_fix} -eq 1 ]]; then
+            # 删除多余空行 (连续两个及以上空行)
+            sed -i '/^[[:space:]]*$/{ N; /^\n$/D; }' "${conf}" 2>/dev/null || true
+            # 也删除以空格开头的空行
+            sed -i '/^[[:space:]]*$/d' "${conf}" 2>/dev/null || true
+        fi
+    done
+}
+
+# ---------------------- Nginx 域名匹配配置管理 ----------------------
+# 禁用不在域名列表中的配置文件
+disable_unknown_domain_configs() {
+    local NGINX_CONF_DIR="${1:-/www/server/panel/vhost/nginx}"
+    local DOMAIN="${2:-}"
+    local API_DOMAIN="${3:-}"
+    local CDN_DOMAIN="${4:-}"
+
+    [[ -d "${NGINX_CONF_DIR}" ]] || return 0
+
+    # 构建允许的域名列表
+    local allowed_domains=()
+    [[ -n "${DOMAIN}" ]] && allowed_domains+=("${DOMAIN}")
+    [[ -n "${API_DOMAIN}" ]] && allowed_domains+=("${API_DOMAIN}")
+    [[ -n "${CDN_DOMAIN}" ]] && allowed_domains+=("${CDN_DOMAIN}")
+
+    # 遍历所有 .conf 文件
+    for conf in "${NGINX_CONF_DIR}"/*.conf; do
+        [[ -f "${conf}" ]] || continue
+        local basename
+        basename=$(basename "${conf}" .conf)
+
+        # 跳过系统配置 (以 _ 开头, 或以 0. 开头)
+        [[ "${basename}" == _* ]] && continue
+        [[ "${basename}" == "0."* ]] && continue
+
+        # 跳过宝塔系统配置
+        local bn="${basename}"
+        [[ "${bn}" == "phpfpm_status" ]] && continue
+        [[ "${bn}" == "php_status" ]] && continue
+        [[ "${bn}" == "nginx_status" ]] && continue
+        [[ "${bn}" == "default" ]] && continue
+
+        # 检查是否为允许的域名
+        local is_allowed=0
+        for domain in "${allowed_domains[@]}"; do
+            if [[ "${bn}" == "${domain}" ]]; then
+                is_allowed=1
+                break
+            fi
+        done
+
+        # 如果不是允许的域名, 且不是系统配置, 禁用它
+        if [[ ${is_allowed} -eq 0 ]] && [[ ${#allowed_domains[@]} -gt 0 ]]; then
+            warn "  禁用未使用的域名配置: ${conf}"
+            mv -f "${conf}" "${conf}.disabled" 2>/dev/null || true
+        fi
+    done
+}
 setup_nginx() {
     step "配置 Nginx 反向代理 (宝塔)"
 
@@ -1936,7 +2058,9 @@ NGINXDEFAULT
     fi
 
     # 2.1.5 清理问题配置文件 (phpfpm_status.conf 等)
+    fix_quic_and_corrupted "${NGINX_CONF_DIR}"
     cleanup_problematic_configs "${NGINX_CONF_DIR}"
+    disable_unknown_domain_configs "${NGINX_CONF_DIR}" "${DOMAIN}" "${API_DOMAIN}" "${CDN_DOMAIN}"
 
     # 4. 创建 vhost 目录
     mkdir -p "${NGINX_CONF_DIR}"
@@ -2054,6 +2178,7 @@ EOFCONF
     fi
 
     # 修复 http2 指令兼容性 (宝塔默认 nginx < 1.25.1)
+    fix_quic_and_corrupted "${NGINX_CONF_DIR}"
     fix_nginx_http2_compat "${NGINX_CONF_DIR}"
     cleanup_problematic_configs "${NGINX_CONF_DIR}"
     cleanup_duplicate_mime "${NGINX_CONF_DIR}"
@@ -2329,6 +2454,7 @@ EOFCONF
 
     nginx -t 2>/dev/null && nginx -s reload 2>/dev/null
     # SSL 配置完成后立即修复 http2 兼容性 (宝塔 acme_v2 可能写入 http2 指令)
+    fix_quic_and_corrupted "/www/server/panel/vhost/nginx"
     fix_nginx_http2_compat "/www/server/panel/vhost/nginx"
     cleanup_problematic_configs "/www/server/panel/vhost/nginx"
     cleanup_duplicate_mime "/www/server/panel/vhost/nginx"
@@ -2507,6 +2633,7 @@ server {
 EOFCONF
 
     # 修复 http2 指令兼容性 (宝塔默认 nginx < 1.25.1)
+    fix_quic_and_corrupted "/www/server/panel/vhost/nginx"
     fix_nginx_http2_compat "/www/server/panel/vhost/nginx"
     cleanup_problematic_configs "/www/server/panel/vhost/nginx"
     cleanup_duplicate_mime "/www/server/panel/vhost/nginx"
@@ -3290,7 +3417,9 @@ NGINXDEFAULT
     fi
 
     # 1.1.5 清理问题配置文件 (phpfpm_status.conf 等)
+    fix_quic_and_corrupted "${NGINX_CONF_DIR}"
     cleanup_problematic_configs "${NGINX_CONF_DIR}"
+    disable_unknown_domain_configs "${NGINX_CONF_DIR}" "${DOMAIN}" "${API_DOMAIN}" "${CDN_DOMAIN}"
 
     # 1.2 写入默认 catch-all server (兜底, 防止默认 404 页)
     info "写入默认 catch-all server"
@@ -3389,6 +3518,7 @@ EOFCONF
 
     # 5. 测试并启动 Nginx
     info "测试 Nginx 配置..."
+    fix_quic_and_corrupted "${NGINX_CONF_DIR}"
     fix_nginx_http2_compat "${NGINX_CONF_DIR}"
     cleanup_problematic_configs "${NGINX_CONF_DIR}"
     cleanup_duplicate_mime "${NGINX_CONF_DIR}"
