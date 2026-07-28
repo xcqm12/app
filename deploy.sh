@@ -3585,6 +3585,20 @@ fix_nginx_configs() {
     local nginx_bin
     nginx_bin=$(command -v nginx 2>/dev/null || echo "/usr/sbin/nginx")
 
+    # 检测镜像模式: 在写入非镜像配置之前, 先检查现有配置
+    local mirror_mode_active=0
+    if [[ -f "${NGINX_CONF_DIR}/${API_DOMAIN}.conf" ]]; then
+        if grep -q "api.modrinth.com" "${NGINX_CONF_DIR}/${API_DOMAIN}.conf" 2>/dev/null; then
+            mirror_mode_active=1
+            info "检测到现有镜像模式配置, 将在修复后重新应用"
+        fi
+    fi
+    # 也检查 MIRROR_MODE 环境变量
+    if [[ "${MIRROR_MODE}" == "1" ]]; then
+        mirror_mode_active=1
+        info "MIRROR_MODE=1 已设置, 将在修复后应用镜像模式配置"
+    fi
+
     # 自动检测宝塔 nginx 配置路径 (用 nginx -V 获取真实 conf-path)
     local nginx_real_conf
     nginx_real_conf=$("${nginx_bin}" -V 2>&1 | grep -oP '\-\-conf-path=\K[^ ]+' 2>/dev/null)
@@ -3868,6 +3882,14 @@ EOFCONF
     # 8. 应用 SSL 证书 (如果已有)
     info "检测并应用 SSL 证书..."
     setup_ssl
+
+    # 9. 检测并应用镜像模式配置 (如果之前启用了镜像模式)
+    if [[ "${mirror_mode_active}" == "1" ]]; then
+        info "应用镜像模式 Nginx 配置 (error_page+return 模式, 避免 builder error)..."
+        # 从现有配置检测到的镜像模式, 强制设置 MIRROR_MODE
+        MIRROR_MODE=1
+        setup_modrinth_mirror
+    fi
 }
 
 # ---------------------- 重新配置第三方服务 ----------------------
