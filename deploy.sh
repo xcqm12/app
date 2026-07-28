@@ -2654,22 +2654,14 @@ setup_modrinth_mirror() {
 # GET  请求代理到 api.modrinth.com (显示官方 mod 数据)
 # 写请求路由到本地 labrinth (本地上传, 不同步官网)
 
-# 按请求方法选择上游
-map \$request_method \$api_upstream {
-    default "https://api.modrinth.com";
-    POST    "http://127.0.0.1:${BACKEND_PORT}";
-    PUT     "http://127.0.0.1:${BACKEND_PORT}";
-    PATCH   "http://127.0.0.1:${BACKEND_PORT}";
-    DELETE  "http://127.0.0.1:${BACKEND_PORT}";
-}
-
-# 按请求方法选择 Host 头
-map \$request_method \$api_host_header {
-    default "api.modrinth.com";
-    POST    "${API_DOMAIN}";
-    PUT     "${API_DOMAIN}";
-    PATCH   "${API_DOMAIN}";
-    DELETE  "${API_DOMAIN}";
+# ====== map 指令必须在 http 块级别, 这里在 server 之前 ======
+# 使用 return + 命名 location 避免变量化 proxy_pass 的 builder error
+map \$request_method \$api_redirect {
+    default "@modrinth_official";
+    POST    "@local_labrinth";
+    PUT     "@local_labrinth";
+    PATCH   "@local_labrinth";
+    DELETE  "@local_labrinth";
 }
 
 server {
@@ -2679,7 +2671,7 @@ server {
     client_max_body_size 1024m;
     client_body_buffer_size 512k;
 
-    resolver 8.8.8.8 1.1.1.1 valid=300s;
+    resolver 8.8.8.8 1.1.1.1 valid=300s ipv6=off;
     resolver_timeout 5s;
 
     # ====== 本地路由: 用户/认证/上传相关 (所有方法都走本地) ======
@@ -2706,7 +2698,25 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    # 官网回源 (本地 404 时)
+    # ====== 通用路由: 使用 return 重定向到命名 location ======
+    location / {
+        return \$api_redirect;
+    }
+
+    # ====== 本地 labrinth 命名 location (写请求目标) ======
+    location @local_labrinth {
+        proxy_pass http://127.0.0.1:${BACKEND_PORT};
+        proxy_set_header Host ${API_DOMAIN};
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 600s;
+    }
+
+    # ====== 官网 modrinth 命名 location (GET 请求目标 + 本地404回源) ======
     location @modrinth_official {
         proxy_pass https://api.modrinth.com;
         proxy_set_header Host api.modrinth.com;
@@ -2714,19 +2724,8 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_ssl_server_name on;
-    }
-
-    # ====== 其他请求: 按方法分流 ======
-    location / {
-        proxy_pass \$api_upstream;
-        proxy_set_header Host \$api_host_header;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_ssl_server_name on;
         proxy_connect_timeout 30s;
         proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
     }
 
     # 健康检查 (走本地)
@@ -2744,13 +2743,14 @@ EOFCONF
     info "重写主站反代配置: 前端代理到 modrinth.com (完整镜像)"
     cat > "${main_conf}" <<EOFCONF
 # Modrinth 镜像模式 - 主站前端代理到官网
+# 注意: 使用命名 location 避免变量化 proxy_pass 的 builder error
 server {
     listen 80;
     server_name ${DOMAIN};
 
     client_max_body_size 1024m;
 
-    resolver 8.8.8.8 1.1.1.1 valid=300s;
+    resolver 8.8.8.8 1.1.1.1 valid=300s ipv6=off;
     resolver_timeout 5s;
 
     # 主站前端 -> 官网 modrinth.com (完整镜像)
@@ -2773,19 +2773,14 @@ server {
         sub_filter_types application/javascript application/json text/html text/css;
     }
 
-    # API 请求转发到 API 子域
+    # API 请求转发到 API 子域 (使用命名 location 避免变量化 proxy_pass)
     location /api/ {
-        proxy_pass https://${API_DOMAIN};
-        proxy_set_header Host ${API_DOMAIN};
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        return 301 https://${API_DOMAIN}\$request_uri;
     }
 
-    # CDN 资源 -> 本地 CDN
+    # CDN 资源 -> 本地 CDN (使用命名 location 避免变量化 proxy_pass)
     location /cdn/ {
-        proxy_pass https://${CDN_DOMAIN}/;
-        proxy_set_header Host ${CDN_DOMAIN};
+        return 301 https://${CDN_DOMAIN}\$request_uri;
     }
 
     location ~ /\. {
