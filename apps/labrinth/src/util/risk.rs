@@ -50,7 +50,7 @@ pub async fn check_text_risk(
     {
         return Ok(true);
     }
-    let site_url = dotenvy::var("SITE_URL")?;
+    let site_url = dotenvy::var("SITE_URL").unwrap_or_default();
     let site_url = format!("{site_url}{url}");
 
     let mut conn = redis.connect().await?;
@@ -110,7 +110,9 @@ pub async fn check_text_risk(
     }
 
     let risk_str = risk.join(",");
-    send_msg(text, &risk_str, &site_url, username, pos).await?;
+    if let Err(e) = send_msg(text, &risk_str, &site_url, username, pos).await {
+        log::warn!("发送文本风控飞书告警失败 (best-effort, 不阻塞主流程): {e}");
+    }
     Ok(false)
 }
 
@@ -133,7 +135,7 @@ pub async fn check_image_risk(
         return Ok(true);
     }
 
-    let site_url = dotenvy::var("SITE_URL")?;
+    let site_url = dotenvy::var("SITE_URL").unwrap_or_default();
     let site_url = format!("{site_url}{pos_url}");
 
     let mut conn = redis.connect().await?;
@@ -193,7 +195,9 @@ pub async fn check_image_risk(
     }
 
     let risk_str = risk.labels.join(",");
-    send_image_warning(&risk_str, url, &site_url, username, pos).await?;
+    if let Err(e) = send_image_warning(&risk_str, url, &site_url, username, pos).await {
+        log::warn!("发送图片风控飞书告警失败 (best-effort, 不阻塞主流程): {e}");
+    }
     Ok(false)
 }
 
@@ -216,7 +220,7 @@ pub async fn check_text_risk_with_labels(
         return Ok((true, String::new()));
     }
 
-    let site_url = dotenvy::var("SITE_URL")?;
+    let site_url = dotenvy::var("SITE_URL").unwrap_or_default();
     let site_url = format!("{site_url}{url}");
 
     let mut conn = redis.connect().await?;
@@ -270,7 +274,9 @@ pub async fn check_text_risk_with_labels(
     }
 
     let risk_str = risk.join(",");
-    send_msg(text, &risk_str, &site_url, username, pos).await?;
+    if let Err(e) = send_msg(text, &risk_str, &site_url, username, pos).await {
+        log::warn!("发送文本风控飞书告警失败 (best-effort, 不阻塞主流程): {e}");
+    }
     Ok((false, risk_str))
 }
 
@@ -304,7 +310,7 @@ pub async fn check_image_risk_with_labels(
         });
     }
 
-    let site_url = dotenvy::var("SITE_URL")?;
+    let site_url = dotenvy::var("SITE_URL").unwrap_or_default();
     let site_url = format!("{site_url}{pos_url}");
 
     let mut conn = redis.connect().await?;
@@ -363,7 +369,9 @@ pub async fn check_image_risk_with_labels(
     }
 
     let risk_str = risk.labels.join(",");
-    send_image_warning(&risk_str, url, &site_url, username, pos).await?;
+    if let Err(e) = send_image_warning(&risk_str, url, &site_url, username, pos).await {
+        log::warn!("发送图片风控飞书告警失败 (best-effort, 不阻塞主流程): {e}");
+    }
     Ok(ImageRiskCheckResult {
         passed: false,
         labels: risk_str,
@@ -378,7 +386,21 @@ async fn send_msg(
     user: &str,
     pos: &str,
 ) -> Result<(), ApiError> {
-    let client = reqwest::Client::builder().build()?;
+    let feishu_bot_webhook = match dotenvy::var("FEISHU_BOT_WEBHOOK") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            log::debug!("FEISHU_BOT_WEBHOOK 未配置，跳过发送文本风控飞书告警 (best-effort)");
+            return Ok(());
+        }
+    };
+
+    let client = match reqwest::Client::builder().build() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("构建 reqwest Client 失败，跳过飞书告警: {e}");
+            return Ok(());
+        }
+    };
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
@@ -400,16 +422,20 @@ async fn send_msg(
             }
         }
     });
-    let feishu_bot_webhook = dotenvy::var("FEISHU_BOT_WEBHOOK")?;
-    let request = client
-        .request(reqwest::Method::POST, feishu_bot_webhook)
+
+    match client
+        .request(reqwest::Method::POST, &feishu_bot_webhook)
         .headers(headers)
-        .json(&json_str);
-
-    let response = request.send().await?;
-    let body = response.text().await?;
-
-    println!("{}", body);
+        .json(&json_str)
+        .send()
+        .await
+    {
+        Ok(response) => match response.text().await {
+            Ok(body) => log::debug!("飞书文本风控告警响应: {body}"),
+            Err(e) => log::warn!("读取飞书文本风控告警响应失败: {e}"),
+        },
+        Err(e) => log::warn!("发送飞书文本风控告警请求失败: {e}"),
+    }
 
     Ok(())
 }
@@ -421,7 +447,21 @@ async fn send_image_warning(
     user: &str,
     pos: &str,
 ) -> Result<(), ApiError> {
-    let client = reqwest::Client::builder().build()?;
+    let feishu_bot_webhook = match dotenvy::var("FEISHU_BOT_WEBHOOK") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            log::debug!("FEISHU_BOT_WEBHOOK 未配置，跳过发送图片风控飞书告警 (best-effort)");
+            return Ok(());
+        }
+    };
+
+    let client = match reqwest::Client::builder().build() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("构建 reqwest Client 失败，跳过飞书图片告警: {e}");
+            return Ok(());
+        }
+    };
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
@@ -443,16 +483,20 @@ async fn send_image_warning(
             }
         }
     });
-    let feishu_bot_webhook = dotenvy::var("FEISHU_BOT_WEBHOOK")?;
-    let request = client
-        .request(reqwest::Method::POST, feishu_bot_webhook)
+
+    match client
+        .request(reqwest::Method::POST, &feishu_bot_webhook)
         .headers(headers)
-        .json(&json_str);
-
-    let response = request.send().await?;
-    let body = response.text().await?;
-
-    println!("{}", body);
+        .json(&json_str)
+        .send()
+        .await
+    {
+        Ok(response) => match response.text().await {
+            Ok(body) => log::debug!("飞书图片风控告警响应: {body}"),
+            Err(e) => log::warn!("读取飞书图片风控告警响应失败: {e}"),
+        },
+        Err(e) => log::warn!("发送飞书图片风控告警请求失败: {e}"),
+    }
 
     Ok(())
 }
@@ -461,8 +505,16 @@ async fn text_risk(
     text: &str,
     username: &str,
 ) -> Result<Vec<String>, ApiError> {
-    let ak = dotenvy::var("HUOSHAN_AK")?;
-    let sk = dotenvy::var("HUOSHAN_SK")?;
+    let (ak, sk) = match (
+        dotenvy::var("HUOSHAN_AK"),
+        dotenvy::var("HUOSHAN_SK"),
+    ) {
+        (Ok(ak), Ok(sk)) if !ak.is_empty() && !sk.is_empty() => (ak, sk),
+        _ => {
+            log::debug!("HUOSHAN_AK/HUOSHAN_SK 未配置，跳过文本风控检测 (fail-open)");
+            return Ok(vec![]);
+        }
+    };
     let now: DateTime<Utc> = Utc::now();
     let x_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let mut query = HashMap::new();
@@ -491,8 +543,8 @@ async fn text_risk(
     let result = match response_body.await {
         Ok(r) => r,
         Err(e) => {
-            log::error!("文本风控 API 请求失败: {e}");
-            return Ok(vec!["风控API异常".to_string()]);
+            log::error!("文本风控 API 请求失败，采用 fail-open 策略放行 (不阻塞主流程): {e}");
+            return Ok(vec![]);
         }
     };
     if result.get("Result").is_some()
@@ -570,8 +622,8 @@ async fn text_risk(
 
         Ok(vec)
     } else {
-        log::error!("文本风控 API 返回错误: {:?}", result);
-        Ok(vec!["风控API异常".to_string()])
+        log::error!("文本风控 API 返回错误，采用 fail-open 策略放行 (不阻塞主流程): {:?}", result);
+        Ok(vec![])
     }
 }
 
@@ -586,8 +638,19 @@ async fn imasge_risk(
     username: &str,
     pos: &str,
 ) -> Result<ImageRiskDetail, ApiError> {
-    let ak = dotenvy::var("HUOSHAN_AK")?;
-    let sk = dotenvy::var("HUOSHAN_SK")?;
+    let (ak, sk) = match (
+        dotenvy::var("HUOSHAN_AK"),
+        dotenvy::var("HUOSHAN_SK"),
+    ) {
+        (Ok(ak), Ok(sk)) if !ak.is_empty() && !sk.is_empty() => (ak, sk),
+        _ => {
+            log::debug!("HUOSHAN_AK/HUOSHAN_SK 未配置，跳过图片风控检测 (fail-open)");
+            return Ok(ImageRiskDetail {
+                labels: vec![],
+                frame_url: None,
+            });
+        }
+    };
     let now: DateTime<Utc> = Utc::now();
     let x_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let mut query = HashMap::new();
@@ -617,9 +680,9 @@ async fn imasge_risk(
     let result = match response_body.await {
         Ok(r) => r,
         Err(e) => {
-            log::error!("图片风控 API 请求失败: {e}");
+            log::error!("图片风控 API 请求失败，采用 fail-open 策略放行 (不阻塞主流程): {e}");
             return Ok(ImageRiskDetail {
-                labels: vec!["风控API异常".to_string()],
+                labels: vec![],
                 frame_url: None,
             });
         }
@@ -704,9 +767,9 @@ async fn imasge_risk(
             frame_url,
         })
     } else {
-        log::error!("图片风控 API 返回错误: {:?}", result);
+        log::error!("图片风控 API 返回错误，采用 fail-open 策略放行 (不阻塞主流程): {:?}", result);
         Ok(ImageRiskDetail {
-            labels: vec!["风控API异常".to_string()],
+            labels: vec![],
             frame_url: None,
         })
     }
