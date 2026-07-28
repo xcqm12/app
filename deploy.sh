@@ -928,6 +928,103 @@ EOF
     info "数据库服务启动完成"
 }
 
+# ---------------------- 重启 Docker 服务 ----------------------
+restart_docker_services() {
+    step "重启所有 Docker 服务"
+
+    local INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/bbsmc}"
+    local DATA_DIR="${DATA_DIR:-/www/wwwroot/bbsmc-data}"
+    local COMPOSE_FILE="${INSTALL_DIR}/docker-compose.prod.yml"
+
+    cd "${INSTALL_DIR}"
+
+    if [[ ! -f "${COMPOSE_FILE}" ]]; then
+        warn "未找到 docker-compose.prod.yml, 尝试使用默认 docker-compose.yml..."
+        COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
+    fi
+
+    if [[ ! -f "${COMPOSE_FILE}" ]]; then
+        error "未找到 docker-compose 配置文件"
+        return 1
+    fi
+
+    if ! command -v docker &>/dev/null; then
+        error "Docker 未安装"
+        return 1
+    fi
+
+    info "使用配置文件: ${COMPOSE_FILE}"
+    echo ""
+
+    echo -e "${YELLOW}当前服务状态:${NC}"
+    docker compose -f "${COMPOSE_FILE}" ps 2>/dev/null || docker-compose -f "${COMPOSE_FILE}" ps
+
+    echo ""
+    echo -e "${YELLOW}正在停止所有服务...${NC}"
+    docker compose -f "${COMPOSE_FILE}" down 2>/dev/null || docker-compose -f "${COMPOSE_FILE}" down
+    sleep 3
+
+    echo ""
+    echo -e "${YELLOW}正在启动所有服务...${NC}"
+    docker compose -f "${COMPOSE_FILE}" up -d 2>/dev/null || docker-compose -f "${COMPOSE_FILE}" up -d
+    sleep 5
+
+    echo ""
+    echo -e "${YELLOW}等待服务就绪 (15秒)...${NC}"
+    sleep 15
+
+    echo ""
+    echo -e "${YELLOW}服务状态:${NC}"
+    docker compose -f "${COMPOSE_FILE}" ps 2>/dev/null || docker-compose -f "${COMPOSE_FILE}" ps
+
+    echo ""
+    echo -e "${YELLOW}健康检查:${NC}"
+
+    local all_healthy=true
+    local services=("bbsmc-postgres:5432" "bbsmc-redis:6379" "bbsmc-meilisearch:7700" "bbsmc-clickhouse:8123")
+
+    for svc in "${services[@]}"; do
+        local container="${svc%%:*}"
+        local port="${svc##*:}"
+
+        local status
+        status=$(docker inspect -f '{{.State.Health.Status}}' "${container}" 2>/dev/null || echo "not_found")
+
+        if [[ "${status}" == "healthy" ]]; then
+            echo -e "  ${GREEN}✓${NC} ${container} (port ${port}) - healthy"
+        elif [[ "${status}" == "unhealthy" ]]; then
+            echo -e "  ${RED}✗${NC} ${container} (port ${port}) - unhealthy"
+            all_healthy=false
+        elif [[ "${status}" == "not_found" ]]; then
+            local alt_container
+            alt_container=$(docker ps --filter "publish=${port}" --format '{{.Names}}' 2>/dev/null | head -1)
+            if [[ -n "${alt_container}" ]]; then
+                local alt_status
+                alt_status=$(docker inspect -f '{{.State.Health.Status}}' "${alt_container}" 2>/dev/null || echo "unknown")
+                echo -e "  ${GREEN}✓${NC} ${alt_container} (port ${port}) - ${alt_status}"
+            else
+                echo -e "  ${RED}✗${NC} ${container} (port ${port}) - container not found"
+                all_healthy=false
+            fi
+        else
+            echo -e "  ${YELLOW}?${NC} ${container} (port ${port}) - ${status}"
+        fi
+    done
+
+    echo ""
+    if [[ "${all_healthy}" == "true" ]]; then
+        echo -e "${GREEN}══════════════════════════════════════════════════════════${NC}"
+        echo -e "${GREEN}  ✓ 所有 Docker 服务已重启并运行正常!${NC}"
+        echo -e "${GREEN}══════════════════════════════════════════════════════════${NC}"
+    else
+        echo -e "${YELLOW}部分服务可能未完全就绪, 请检查日志:${NC}"
+        echo -e "  docker logs --tail 50 bbsmc-postgres"
+        echo -e "  docker logs --tail 50 bbsmc-redis"
+        echo -e "  docker logs --tail 50 bbsmc-meilisearch"
+        echo -e "  docker logs --tail 50 bbsmc-clickhouse"
+    fi
+}
+
 # ---------------------- 生成环境配置 ----------------------
 gen_env_files() {
     step "生成环境配置文件"
@@ -3233,6 +3330,13 @@ print_summary() {
     echo -e "  - 不要使用: Authorization: Bearer <ADMIN_KEY>"
     echo -e "  示例: curl -X POST -H 'Modrinth-Admin: <KEY>' https://${API_DOMAIN}/v2/admin/_force_reindex"
     echo -e "  查看 Admin Key: cat ${INSTALL_DIR}/deploy-credentials.txt | grep Admin"
+    echo ""
+    echo -e "  ${RED}# Docker 数据库服务异常?${NC}"
+    echo -e "  一键重启所有 Docker 服务:"
+    echo -e "  bash ${INSTALL_DIR}/deploy.sh restart-db"
+    echo -e "  或手动:"
+    echo -e "  cd ${INSTALL_DIR} && docker compose -f docker-compose.prod.yml down && docker compose -f docker-compose.prod.yml up -d"
+    echo -e "  查看日志: docker logs --tail 100 <container_name>"
 
     # 镜像模式额外说明
     if [[ "${MIRROR_MODE}" == "1" ]]; then
@@ -4454,6 +4558,11 @@ main() {
             verify_admin_access
             exit 0
             ;;
+        restart-db|restart-docker|db-restart)
+            # 重启所有 Docker 数据库服务
+            restart_docker_services
+            exit 0
+            ;;
         install|"")
             ;;
         *)
@@ -4471,6 +4580,7 @@ main() {
             echo "  set-admin    设置管理员账户 (提升用户为 admin 角色)"
             echo "               用法: bash $0 set-admin <用户名> [--confirm]"
             echo "  verify-admin 验证后台访问 (检查后端/前端/API 状态)"
+            echo "  restart-db   重启所有 Docker 服务 (PostgreSQL/Redis/Meilisearch/ClickHouse)"
             echo ""
             echo "环境变量:"
             echo "  DOMAIN              主域名 (如 bbsmc.org.cn)"
