@@ -1473,18 +1473,166 @@ cleanup_duplicate_mime() {
     local nginx_main
     nginx_main=$("${nginx_bin}" -V 2>&1 | grep -oP '\-\-conf-path=\K[^ ]+' 2>/dev/null || echo "/etc/nginx/nginx.conf")
 
+    local global_has_mime=0
     if [[ -f "${nginx_main}" ]] && grep -q "mime.types" "${nginx_main}" 2>/dev/null; then
-        info "检测到全局 mime.types 引用, 清理 vhost 中的重复引用..."
-        if [[ -d "${NGINX_CONF_DIR}" ]]; then
-            for conf in "${NGINX_CONF_DIR}"/*.conf; do
-                [[ -f "${conf}" ]] || continue
-                if grep -q "mime.types" "${conf}" 2>/dev/null; then
-                    warn "  清理 ${conf} 中的重复 mime.types 引用"
-                    sed -i '/include.*mime\.types/d' "${conf}" 2>/dev/null || true
-                fi
-            done
-        fi
+        global_has_mime=1
     fi
+
+    if [[ -d "${NGINX_CONF_DIR}" ]]; then
+        for conf in "${NGINX_CONF_DIR}"/*.conf; do
+            [[ -f "${conf}" ]] || continue
+
+            # 1. 清理重复的 mime.types 引用
+            if [[ ${global_has_mime} -eq 1 ]] && grep -q "mime.types" "${conf}" 2>/dev/null; then
+                warn "  清理 ${conf} 中的重复 mime.types 引用"
+                sed -i '/include.*mime\.types/d' "${conf}" 2>/dev/null || true
+            fi
+
+            # 2. 清理不存在的 include 文件 (如 fastcgi_params)
+            local has_bad_include=0
+            while IFS= read -r line; do
+                local inc_file
+                inc_file=$(echo "${line}" | grep -oP 'include\s+\K[^;]+' 2>/dev/null | tr -d ' ')
+                [[ -z "${inc_file}" ]] && continue
+                # 通配符跳过
+                [[ "${inc_file}" == *"*"* ]] && continue
+                if [[ ! -f "${inc_file}" ]]; then
+                    warn "  ${conf}: 引用的文件不存在: ${inc_file}"
+                    has_bad_include=1
+                    # 删除这行 include
+                    local escaped_file
+                    escaped_file=$(echo "${inc_file}" | sed 's/[.[\*^$+?{|()]/\\&/g')
+                    sed -i "/include.*${escaped_file}/d" "${conf}" 2>/dev/null || true
+                fi
+            done < <(grep -n "include.*fastcgi\|include.*conf/" "${conf}" 2>/dev/null || true)
+
+            # 3. 如果文件引用了不存在的 fastcgi_params, 创建占位文件
+            if grep -q "fastcgi_params" "${conf}" 2>/dev/null; then
+                if [[ ! -f "/etc/nginx/fastcgi_params" ]]; then
+                    warn "  创建 /etc/nginx/fastcgi_params 占位文件"
+                    cat > "/etc/nginx/fastcgi_params" << 'FASTCGI'
+fastcgi_param QUERY_STRING       $query_string;
+fastcgi_param REQUEST_METHOD     $request_method;
+fastcgi_param CONTENT_TYPE       $content_type;
+fastcgi_param CONTENT_LENGTH     $content_length;
+fastcgi_param SCRIPT_FILENAME    $document_root$fastcgi_script_name;
+fastcgi_param SCRIPT_NAME        $fastcgi_script_name;
+fastcgi_param PATH_INFO          $fastcgi_path_info;
+fastcgi_param REQUEST_URI        $request_uri;
+fastcgi_param DOCUMENT_URI       $document_uri;
+fastcgi_param DOCUMENT_ROOT      $document_root;
+fastcgi_param SERVER_PROTOCOL    $server_protocol;
+fastcgi_param SERVER_SOFTWARE    $server_software;
+fastcgi_param REMOTE_ADDR        $remote_addr;
+fastcgi_param REMOTE_PORT        $remote_port;
+fastcgi_param SERVER_ADDR        $server_addr;
+fastcgi_param SERVER_PORT        $server_port;
+fastcgi_param SERVER_NAME        $server_name;
+FASTCGI
+                fi
+            fi
+
+            # 4. 删除空行 (可选, 清理掉被删掉 include 后的空行)
+            sed -i '/^[[:space:]]*$/N;/^\n$/d' "${conf}" 2>/dev/null || true
+        done
+    fi
+
+    # 5. 确保 /etc/nginx/fastcgi_params 存在 (全局兜底)
+    if [[ ! -f "/etc/nginx/fastcgi_params" ]]; then
+        warn "创建全局 /etc/nginx/fastcgi_params"
+        cat > "/etc/nginx/fastcgi_params" << 'FASTCGI'
+fastcgi_param QUERY_STRING       $query_string;
+fastcgi_param REQUEST_METHOD     $request_method;
+fastcgi_param CONTENT_TYPE       $content_type;
+fastcgi_param CONTENT_LENGTH     $content_length;
+fastcgi_param SCRIPT_FILENAME    $document_root$fastcgi_script_name;
+fastcgi_param SCRIPT_NAME        $fastcgi_script_name;
+fastcgi_param PATH_INFO          $fastcgi_path_info;
+fastcgi_param REQUEST_URI        $request_uri;
+fastcgi_param DOCUMENT_URI       $document_uri;
+fastcgi_param DOCUMENT_ROOT      $document_root;
+fastcgi_param SERVER_PROTOCOL    $server_protocol;
+fastcgi_param REMOTE_ADDR        $remote_addr;
+fastcgi_param REMOTE_PORT        $remote_port;
+fastcgi_param SERVER_ADDR        $server_addr;
+fastcgi_param SERVER_PORT        $server_port;
+fastcgi_param SERVER_NAME        $server_name;
+FASTCGI
+    fi
+
+    return 0
+}
+
+# ---------------------- Nginx 问题配置清理 ----------------------
+# 清理宝塔生成的 php-fpm 状态配置等可能引起问题的文件
+cleanup_problematic_configs() {
+    local NGINX_CONF_DIR="${1:-/www/server/panel/vhost/nginx}"
+
+    [[ -d "${NGINX_CONF_DIR}" ]] || return 0
+
+    # 已知问题文件列表
+    local problematic_files=(
+        "phpfpm_status.conf"
+        "php_status.conf"
+        "php-fpm.conf"
+    )
+
+    for f in "${problematic_files[@]}"; do
+        local conf="${NGINX_CONF_DIR}/${f}"
+        if [[ -f "${conf}" ]]; then
+            warn "发现问题配置 ${conf}, 重命名为 .disabled"
+            mv -f "${conf}" "${conf}.disabled" 2>/dev/null || true
+        fi
+    done
+
+    # 检查所有 .conf 文件中的 include 是否引用了不存在的文件
+    for conf in "${NGINX_CONF_DIR}"/*.conf; do
+        [[ -f "${conf}" ]] || continue
+        # 提取所有 include 行
+        local includes
+        includes=$(grep -oP 'include\s+\K[^;]+' "${conf}" 2>/dev/null || true)
+        for inc in ${includes}; do
+            # 跳过通配符
+            [[ "${inc}" == *"*"* ]] && continue
+            # 跳过包含变量
+            [[ "${inc}" == *'$'* ]] && continue
+            if [[ ! -f "${inc}" ]]; then
+                # 如果是 fastcgi_params 或其他 nginx 标准文件, 创建占位
+                local basename_inc
+                basename_inc=$(basename "${inc}")
+                case "${basename_inc}" in
+                    fastcgi_params|fastcgi.conf|scgi_params|uwsgi_params)
+                        if [[ ! -f "${inc}" ]]; then
+                            warn "创建 ${inc} 占位文件"
+                            mkdir -p "$(dirname "${inc}")" 2>/dev/null || true
+                            cat > "${inc}" << 'FASTCGISTD'
+fastcgi_param QUERY_STRING       $query_string;
+fastcgi_param REQUEST_METHOD     $request_method;
+fastcgi_param CONTENT_TYPE       $content_type;
+fastcgi_param CONTENT_LENGTH     $content_length;
+fastcgi_param SCRIPT_FILENAME    $document_root$fastcgi_script_name;
+fastcgi_param SCRIPT_NAME        $fastcgi_script_name;
+fastcgi_param PATH_INFO          $fastcgi_path_info;
+fastcgi_param REQUEST_URI        $request_uri;
+fastcgi_param DOCUMENT_ROOT      $document_root;
+fastcgi_param SERVER_PROTOCOL    $server_protocol;
+fastcgi_param REMOTE_ADDR        $remote_addr;
+fastcgi_param REMOTE_PORT        $remote_port;
+fastcgi_param SERVER_ADDR        $server_addr;
+fastcgi_param SERVER_PORT        $server_port;
+fastcgi_param SERVER_NAME        $server_name;
+FASTCGISTD
+                        fi
+                        ;;
+                    *)
+                        warn "  ${conf} 引用不存在的文件: ${inc}, 注释掉"
+                        sed -i "s|include ${inc}|# include ${inc} # disabled by BBSMC deploy|" "${conf}" 2>/dev/null || true
+                        ;;
+                esac
+            fi
+        done
+    done
+
     return 0
 }
 
@@ -1787,6 +1935,9 @@ NGINXDEFAULT
         /bin/mv -f "${default_conf}" "${default_conf}.disabled" 2>/dev/null || true
     fi
 
+    # 2.1.5 清理问题配置文件 (phpfpm_status.conf 等)
+    cleanup_problematic_configs "${NGINX_CONF_DIR}"
+
     # 4. 创建 vhost 目录
     mkdir -p "${NGINX_CONF_DIR}"
 
@@ -1904,6 +2055,7 @@ EOFCONF
 
     # 修复 http2 指令兼容性 (宝塔默认 nginx < 1.25.1)
     fix_nginx_http2_compat "${NGINX_CONF_DIR}"
+    cleanup_problematic_configs "${NGINX_CONF_DIR}"
     cleanup_duplicate_mime "${NGINX_CONF_DIR}"
 
     # 测试配置
@@ -2178,6 +2330,7 @@ EOFCONF
     nginx -t 2>/dev/null && nginx -s reload 2>/dev/null
     # SSL 配置完成后立即修复 http2 兼容性 (宝塔 acme_v2 可能写入 http2 指令)
     fix_nginx_http2_compat "/www/server/panel/vhost/nginx"
+    cleanup_problematic_configs "/www/server/panel/vhost/nginx"
     cleanup_duplicate_mime "/www/server/panel/vhost/nginx"
     # 测试修复后的配置
     if ! nginx -t 2>/dev/null; then
@@ -2355,6 +2508,7 @@ EOFCONF
 
     # 修复 http2 指令兼容性 (宝塔默认 nginx < 1.25.1)
     fix_nginx_http2_compat "/www/server/panel/vhost/nginx"
+    cleanup_problematic_configs "/www/server/panel/vhost/nginx"
     cleanup_duplicate_mime "/www/server/panel/vhost/nginx"
 
     # 测试并重载
@@ -3135,6 +3289,9 @@ NGINXDEFAULT
         /bin/mv -f "${default_conf}" "${default_conf}.disabled" 2>/dev/null || true
     fi
 
+    # 1.1.5 清理问题配置文件 (phpfpm_status.conf 等)
+    cleanup_problematic_configs "${NGINX_CONF_DIR}"
+
     # 1.2 写入默认 catch-all server (兜底, 防止默认 404 页)
     info "写入默认 catch-all server"
     cat > "${NGINX_CONF_DIR}/_catch_all.conf" <<EOFCONF
@@ -3233,6 +3390,7 @@ EOFCONF
     # 5. 测试并启动 Nginx
     info "测试 Nginx 配置..."
     fix_nginx_http2_compat "${NGINX_CONF_DIR}"
+    cleanup_problematic_configs "${NGINX_CONF_DIR}"
     cleanup_duplicate_mime "${NGINX_CONF_DIR}"
     local test_output
     test_output=$("${nginx_bin}" -t 2>&1) || true
