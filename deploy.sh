@@ -2751,16 +2751,6 @@ setup_modrinth_mirror() {
 # GET  请求代理到 api.modrinth.com (显示官方 mod 数据)
 # 写请求路由到本地 labrinth (本地上传, 不同步官网)
 
-# ====== map 指令必须在 http 块级别, 这里在 server 之前 ======
-# 使用 return + 命名 location 避免变量化 proxy_pass 的 builder error
-map \$request_method \$api_redirect {
-    default "@modrinth_official";
-    POST    "@local_labrinth";
-    PUT     "@local_labrinth";
-    PATCH   "@local_labrinth";
-    DELETE  "@local_labrinth";
-}
-
 server {
     listen 80;
     server_name ${API_DOMAIN};
@@ -2784,7 +2774,7 @@ server {
         proxy_read_timeout 600s;
     }
 
-    # ====== 本地上传的 mod 详情/版本访问 (走本地 labrinth) ======
+    # ====== 本地上传的 mod 详情/版本访问 (走本地 labrinth, 404 回源官网) ======
     location ~ ^/v[0-9]+/(project|version|version_file|image|mod) {
         proxy_intercept_errors on;
         error_page 404 = @modrinth_official;
@@ -2795,9 +2785,22 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    # ====== 通用路由: 使用 return 重定向到命名 location ======
+    # ====== 通用路由: 根据请求方法分流 ======
+    # POST/PUT/PATCH/DELETE -> 本地 labrinth (418 -> @local_labrinth)
+    # GET/HEAD/OPTIONS -> modrinth 官网 (419 -> @modrinth_official)
+    # 使用 error_page + return 模式, 避免 if+proxy_pass 的各种问题
     location / {
-        return \$api_redirect;
+        # 默认: GET 请求走 modrinth 官网
+        error_page 418 = @local_labrinth;
+        error_page 419 = @modrinth_official;
+
+        # 写请求 -> 本地 labrinth
+        if (\$request_method ~* ^(POST|PUT|PATCH|DELETE)\$) {
+            return 418;
+        }
+
+        # 读请求 -> modrinth 官网
+        return 419;
     }
 
     # ====== 本地 labrinth 命名 location (写请求目标) ======
@@ -2840,7 +2843,7 @@ EOFCONF
     info "重写主站反代配置: 前端代理到 modrinth.com (完整镜像)"
     cat > "${main_conf}" <<EOFCONF
 # Modrinth 镜像模式 - 主站前端代理到官网
-# 注意: 使用命名 location 避免变量化 proxy_pass 的 builder error
+# 注意: API 反代使用 error_page+return 模式按请求方法分流, 避免 builder error
 server {
     listen 80;
     server_name ${DOMAIN};
