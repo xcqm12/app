@@ -2460,7 +2460,7 @@ server {
 EOFCONF
 
     # ---------- CDN 子域名 -> 静态文件 ----------
-    info "写入 CDN 反代配置: ${CDN_DOMAIN} -> ${DATA_DIR}/uploads"
+    info "写入 CDN 反代配置: ${CDN_DOMAIN} -> ${DATA_DIR}/uploads (含 modrinth CDN 回退)"
     cat > "${NGINX_CONF_DIR}/${CDN_DOMAIN}.conf" <<EOFCONF
 server {
     listen 80;
@@ -2468,10 +2468,30 @@ server {
     root ${DATA_DIR}/uploads;
     client_max_body_size 1024m;
 
+    resolver 8.8.8.8 1.1.1.1 valid=300s ipv6=off;
+    resolver_timeout 5s;
+
+    # 本地文件优先, 不存在时回退到 modrinth.com CDN
     location / {
-        try_files \$uri \$uri/ =404;
+        try_files \$uri \$uri/ @modrinth_fallback;
         add_header Access-Control-Allow-Origin *;
         add_header Access-Control-Allow-Methods 'GET, OPTIONS';
+    }
+
+    # 回退到 modrinth.com CDN (处理字体、图片等资源)
+    location @modrinth_fallback {
+        proxy_pass https://cdn.modrinth.com;
+        proxy_set_header Host cdn.modrinth.com;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_ssl_server_name on;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 300s;
+
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        add_header X-CDN-Fallback "modrinth.com";
     }
 
     location ~* \.(jpg|jpeg|png|gif|webp|svg|ico|css|js|woff|woff2)\$ {
@@ -3904,8 +3924,8 @@ server {
 }
 EOFCONF
 
-    # 4. 写入 CDN 配置
-    info "写入 CDN 配置: ${CDN_DOMAIN} -> 静态文件"
+    # 4. 写入 CDN 配置 (镜像模式: 本地文件 + modrinth CDN 回退)
+    info "写入 CDN 配置: ${CDN_DOMAIN} -> 静态文件 (含 modrinth CDN 回退)"
     cat > "${NGINX_CONF_DIR}/${CDN_DOMAIN}.conf" <<EOFCONF
 server {
     listen 80;
@@ -3913,10 +3933,32 @@ server {
     root ${DATA_DIR}/uploads;
     client_max_body_size 1024m;
 
+    resolver 8.8.8.8 1.1.1.1 valid=300s ipv6=off;
+    resolver_timeout 5s;
+
+    # 本地文件优先, 不存在时回退到 modrinth.com CDN
     location / {
-        try_files \$uri \$uri/ =404;
+        # 尝试本地文件
+        try_files \$uri \$uri/ @modrinth_fallback;
         add_header Access-Control-Allow-Origin *;
         add_header Access-Control-Allow-Methods 'GET, OPTIONS';
+    }
+
+    # 回退到 modrinth.com CDN (处理字体、图片等镜像模式下的资源)
+    location @modrinth_fallback {
+        proxy_pass https://cdn.modrinth.com;
+        proxy_set_header Host cdn.modrinth.com;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_ssl_server_name on;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 300s;
+
+        # 回退资源缓存
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        add_header X-CDN-Fallback "modrinth.com";
     }
 
     location ~* \.(jpg|jpeg|png|gif|webp|svg|ico|css|js|woff|woff2)\$ {
