@@ -2813,13 +2813,14 @@ server {
     resolver_timeout 5s;
 
     # ====== 本地路由: 用户/认证/上传相关 (所有方法都走本地) ======
-    # 匹配 v2/xxx 路径, 包括 _internal 前缀 (前端可能使用 v2/_internal/auth/xxx)
+    # 匹配 v2/xxx 路径 (包括 _internal 前缀)
+    # 注: 路径 /_internal/v2/auth/xxx 不在此匹配, 由 location /_internal/ 块处理
     location ~ ^/v[0-9]+/(_internal|auth|user|session|pat|oauth|notifications|report|thread|billing|payout|collections) {
         # API 兼容性重写:
-        #   v2/auth/register -> v2/auth/create_account_with_password (前端可能请求 register)
-        rewrite ^/v[0-9]+/auth/register$ /v2/auth/create_account_with_password break;
-        #   v2/_internal/auth/xxx -> v2/auth/xxx (去掉 _internal 前缀, 匹配后端路由)
-        rewrite ^/v[0-9]+/_internal/auth/(.*)$ /v2/auth/$1 break;
+        #   v2/auth/register -> v2/auth/create (前端可能请求 register, 后端实际路由为 create)
+        rewrite ^/v[0-9]+/auth/register$ /v2/auth/create break;
+        #   v2/auth/create_account_with_password -> v2/auth/create (兼容旧路径)
+        rewrite ^/v[0-9]+/auth/create_account_with_password$ /v2/auth/create break;
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
         proxy_set_header Host ${API_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
@@ -3908,6 +3909,12 @@ server {
     server_name ${API_DOMAIN};
     client_max_body_size 1024m;
 
+    # API 兼容性重写 (确保前端注册/登录请求路由到正确的后端端点)
+    #   v2/auth/register -> v2/auth/create (前端可能请求 register)
+    rewrite ^/v[0-9]+/auth/register$ /v2/auth/create break;
+    #   v2/auth/create_account_with_password -> v2/auth/create (兼容旧路径)
+    rewrite ^/v[0-9]+/auth/create_account_with_password$ /v2/auth/create break;
+
     location / {
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
         proxy_set_header Host \$host;
@@ -3924,7 +3931,7 @@ server {
 }
 EOFCONF
 
-    # 4. 写入 CDN 配置 (镜像模式: 本地文件 + modrinth CDN 回退)
+    # 4. 写入 CDN 配置 (本地文件优先, modrinth CDN 回退)
     info "写入 CDN 配置: ${CDN_DOMAIN} -> 静态文件 (含 modrinth CDN 回退)"
     cat > "${NGINX_CONF_DIR}/${CDN_DOMAIN}.conf" <<EOFCONF
 server {
@@ -3937,14 +3944,20 @@ server {
     resolver_timeout 5s;
 
     # 本地文件优先, 不存在时回退到 modrinth.com CDN
+    # 使用单一 location / 确保所有文件类型 (含 woff/woff2) 都能正确回退
     location / {
-        # 尝试本地文件
-        try_files \$uri \$uri/ @modrinth_fallback;
-        add_header Access-Control-Allow-Origin *;
-        add_header Access-Control-Allow-Methods 'GET, OPTIONS';
+        error_page 404 = @modrinth_fallback;
+
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods 'GET, OPTIONS' always;
+        add_header Cache-Control "public, immutable" always;
+        expires 30d;
+
+        # 尝试本地文件, 不存在则触发 404 -> 回退到 modrinth CDN
+        try_files \$uri \$uri/ =404;
     }
 
-    # 回退到 modrinth.com CDN (处理字体、图片等镜像模式下的资源)
+    # 回退到 modrinth.com CDN (处理字体、图片等资源)
     location @modrinth_fallback {
         proxy_pass https://cdn.modrinth.com;
         proxy_set_header Host cdn.modrinth.com;
@@ -3959,11 +3972,6 @@ server {
         expires 30d;
         add_header Cache-Control "public, immutable";
         add_header X-CDN-Fallback "modrinth.com";
-    }
-
-    location ~* \.(jpg|jpeg|png|gif|webp|svg|ico|css|js|woff|woff2)\$ {
-        expires 30d;
-        add_header Cache-Control "public, immutable";
     }
 
     location ~ /\. {
@@ -4021,9 +4029,9 @@ EOFCONF
     setup_ssl
 
     # 9. 检测并应用镜像模式配置 (如果之前启用了镜像模式)
-    if [[ "${mirror_mode_active}" == "1" ]]; then
+    if [[ "${mirror_mode_active}" == "1" ]] || [[ "${MIRROR_MODE}" == "1" ]]; then
         info "应用镜像模式 Nginx 配置 (error_page+return 模式, 避免 builder error)..."
-        # 从现有配置检测到的镜像模式, 强制设置 MIRROR_MODE
+        # 强制设置 MIRROR_MODE, 确保子函数可以访问
         export MIRROR_MODE=1
         setup_modrinth_mirror
         # setup_modrinth_mirror 会覆盖配置文件, 需要重新应用 SSL
