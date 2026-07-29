@@ -476,21 +476,7 @@
             Modrinth 无从属关系，网站遵循 LGPL 协议开源。
           </p>
           <p class="footer-copyright">
-            © 2019-2026 青岛柒兮网络科技有限公司 |
-            <a href="https://beian.miit.gov.cn" target="_blank" rel="noopener">鲁B2-20210590</a> |
-            <a href="https://beian.miit.gov.cn" target="_blank" rel="noopener"
-              >鲁ICP备2021009459号-12</a
-            >
-            |
-            <a
-              href="https://beian.mps.gov.cn/#/query/webSearch?code=37021002001586"
-              target="_blank"
-              rel="noopener"
-              class="police-beian"
-            >
-              <img src="~/assets/images/beian-police.png" alt="公安备案" />
-              鲁公网安备37021002001586号
-            </a>
+            ©️2026 SevenZeroMeowTeam
           </p>
         </div>
       </div>

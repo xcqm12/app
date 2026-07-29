@@ -2916,11 +2916,22 @@ server {
         proxy_connect_timeout 30s;
         proxy_read_timeout 300s;
 
+        # 禁用 gzip 压缩, 让 sub_filter 可以处理响应内容
+        proxy_set_header Accept-Encoding "";
+
         proxy_cookie_domain modrinth.com ${DOMAIN};
         proxy_cookie_path / /;
 
+        # 域名替换
         sub_filter 'modrinth.com' '${DOMAIN}';
         sub_filter 'api.modrinth.com' '${API_DOMAIN}';
+
+        # 页脚替换: 隐藏原站备案信息, 显示自定义版权
+        # 注入 CSS 隐藏原页脚并显示新版权信息
+        sub_filter '</footer>' '</footer><!-- BBSMC Custom Footer --><style>.footer-copyright{display:none!important}footer{min-height:auto!important}.bbsmc-footer{text-align:center;padding:16px;color:#888;font-size:14px;border-top:1px solid #eee;margin-top:40px}body{padding-bottom:0!important}</style><div class="bbsmc-footer">©️2026 SevenZeroMeowTeam</div>';
+        # 如果找不到 footer 标签, 在 </body> 前注入
+        sub_filter '</body>' '<div class="bbsmc-footer" style="text-align:center;padding:16px;color:#888;font-size:14px;border-top:1px solid #eee;margin-top:40px">©️2026 SevenZeroMeowTeam</div></body>';
+
         sub_filter_once off;
         sub_filter_types application/javascript application/json text/html text/css;
     }
