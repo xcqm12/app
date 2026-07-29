@@ -25,7 +25,32 @@ pub fn send_email_raw(
         dotenvy::var("SMTP_FROM_NAME").unwrap_or_else(|_| "BBSMC".to_string());
     let from_user = dotenvy::var("SMTP_FROM_USER")
         .unwrap_or_else(|_| "noreply".to_string());
-    let from_domain = dotenvy::var("SMTP_FROM_DOMAIN")?;
+    let from_domain = dotenvy::var("SMTP_FROM_DOMAIN")
+        .unwrap_or_else(|_| "bbsmc.org.cn".to_string());
+
+    let smtp_host = match dotenvy::var("SMTP_HOST") {
+        Ok(val) if !val.is_empty() && val != "none" && val != "false" && val != "disabled" => val,
+        _ => {
+            tracing::warn!("SMTP_HOST 未配置或被禁用, 跳过邮件发送");
+            return Ok(());
+        }
+    };
+
+    let smtp_username = match dotenvy::var("SMTP_USERNAME") {
+        Ok(val) if !val.is_empty() && val != "none" && val != "false" && val != "disabled" => val,
+        _ => {
+            tracing::warn!("SMTP_USERNAME 未配置或被禁用, 跳过邮件发送");
+            return Ok(());
+        }
+    };
+
+    let smtp_password = match dotenvy::var("SMTP_PASSWORD") {
+        Ok(val) if !val.is_empty() && val != "none" && val != "false" && val != "disabled" => val,
+        _ => {
+            tracing::warn!("SMTP_PASSWORD 未配置或被禁用, 跳过邮件发送");
+            return Ok(());
+        }
+    };
 
     let email = Message::builder()
         .from(Mailbox::new(
@@ -37,12 +62,9 @@ pub fn send_email_raw(
         .header(ContentType::TEXT_HTML)
         .body(body)?;
 
-    let username = dotenvy::var("SMTP_USERNAME")?;
-    let password = dotenvy::var("SMTP_PASSWORD")?;
-    let host = dotenvy::var("SMTP_HOST")?;
-    let creds = Credentials::new(username, password);
+    let creds = Credentials::new(smtp_username, smtp_password);
 
-    let mailer = SmtpTransport::relay(&host)?
+    let mailer = SmtpTransport::relay(&smtp_host)?
         .port(465)
         .credentials(creds)
         .build();

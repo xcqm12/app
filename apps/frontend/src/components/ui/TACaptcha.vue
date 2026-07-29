@@ -104,6 +104,22 @@ export default {
 
       this.isVerifying = true;
 
+      // 预检: 验证验证码服务是否可用
+      try {
+        const testResponse = await fetch(`${this.requestUrl}?type=${this.type}`, {
+          method: "GET",
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!testResponse.ok) {
+          throw new Error(`Captcha service returned ${testResponse.status}`);
+        }
+      } catch (error) {
+        this.isVerifying = false;
+        this.loadFailed = true;
+        this.onTokenUpdate("captcha-unavailable");
+        return;
+      }
+
       const captchaConfig = {
         requestCaptchaDataUrl: `${this.requestUrl}?type=${this.type}`,
         validCaptchaUrl: this.validUrl,

@@ -2068,11 +2068,13 @@ pub async fn create_account_with_password(
     .insert(Duration::hours(24), &redis)
     .await?;
 
-    send_email_verify(
+    if let Err(e) = send_email_verify(
         new_account.email.clone(),
         flow,
         &format!("欢迎加入 BBSMC 资源社区, {}!", new_account.username),
-    )?;
+    ) {
+        tracing::warn!("发送验证邮件失败 (不影响注册): {}", e);
+    }
 
     if new_account.sign_up_newsletter.unwrap_or(false) {
         // sign_up_beehiiv(&new_account.email).await?;
@@ -2981,7 +2983,9 @@ pub async fn set_email(
     .insert(Duration::hours(24), &redis)
     .await?;
 
-    send_email_verify(email.email.clone(), flow, "我们需要验证您的邮箱地址。")?;
+    if let Err(e) = send_email_verify(email.email.clone(), flow, "我们需要验证您的邮箱地址。") {
+        tracing::warn!("发送验证邮件失败 (不影响操作): {}", e);
+    }
 
     transaction.commit().await?;
     crate::database::models::User::clear_caches(
@@ -3022,7 +3026,9 @@ pub async fn resend_verify_email(
         .insert(Duration::hours(24), &redis)
         .await?;
 
-        send_email_verify(email, flow, "我们需要验证您的邮箱地址。")?;
+        if let Err(e) = send_email_verify(email, flow, "我们需要验证您的邮箱地址。") {
+            tracing::warn!("发送验证邮件失败 (不影响操作): {}", e);
+        }
 
         Ok(HttpResponse::NoContent().finish())
     } else {
@@ -3118,19 +3124,18 @@ fn send_email_verify(
     flow: String,
     opener: &str,
 ) -> Result<(), crate::auth::email::MailError> {
+    let site_url = dotenvy::var("SITE_URL")
+        .unwrap_or_else(|_| "https://bbsmc.org.cn".to_string());
+    let verify_path = dotenvy::var("SITE_VERIFY_EMAIL_PATH")
+        .unwrap_or_else(|_| "verify-email".to_string());
+
+    let button_link = format!("{}/{}?flow={}", site_url, verify_path, flow);
+
     send_email(
         email,
         "验证您的邮箱",
         opener,
         "请点击下面的链接以验证您的邮箱。如果按钮无法使用，您可以复制链接并粘贴到浏览器中。该链接将在 24 小时后失效。",
-        Some((
-            "验证邮箱",
-            &format!(
-                "{}/{}?flow={}",
-                dotenvy::var("SITE_URL")?,
-                dotenvy::var("SITE_VERIFY_EMAIL_PATH")?,
-                flow
-            ),
-        )),
+        Some(("验证邮箱", &button_link)),
     )
 }
