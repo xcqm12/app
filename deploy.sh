@@ -925,7 +925,81 @@ EOF
         info "PostgreSQL 连接正常"
     fi
 
+    # ---------- 验证并修复 ClickHouse 密码 ----------
+    # 同 PostgreSQL: 容器已存在时, 密码可能与 .env 中 CH_PASS 不一致
+    # (历史上 .env 中的 CH_PASS 末尾被误带 '))' 等字符, 容器创建后清理 .env 但容器未重建)
+    info "验证 ClickHouse 连接..."
+    fix_clickhouse_password
+
     info "数据库服务启动完成"
+}
+
+# ---------------------- ClickHouse 密码自动修复 ----------------------
+# 用途: 当 .env 中的 CH_PASS 与容器内 default 用户的密码不一致时,
+#       自动用 ALTER USER 同步, 避免 labrinth 启动 panic (AUTHENTICATION_FAILED)
+# 调用: 在 start_docker_services 内自动调用, 也可单独运行 `bash deploy.sh fix-clickhouse`
+fix_clickhouse_password() {
+    # 从 .env 加载 CH_PASS (labrinth 实际使用的密码)
+    local INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/bbsmc}"
+    local ENV_FILE="${INSTALL_DIR}/bin/.env"
+    if [[ -f "${ENV_FILE}" ]]; then
+        local env_ch_pass
+        env_ch_pass=$(grep -E "^CH_PASS=" "${ENV_FILE}" | head -1 | cut -d= -f2-)
+        if [[ -n "${env_ch_pass}" ]]; then
+            CH_PASS="${env_ch_pass}"
+        fi
+    fi
+
+    # 读取容器实际的密码 (历史脏值, 例如末尾误带的 '))')
+    local container_ch_pass
+    container_ch_pass=$(docker inspect bbsmc-clickhouse \
+        --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | grep "^CLICKHOUSE_PASSWORD=" | head -1 | cut -d= -f2-)
+
+    if [[ -z "${container_ch_pass}" ]]; then
+        warn "无法读取 bbsmc-clickhouse 容器的 CLICKHOUSE_PASSWORD, 跳过验证"
+        return 0
+    fi
+
+    # 尝试用 .env 中的密码登录
+    local ch_test
+    ch_test=$(docker exec bbsmc-clickhouse \
+        clickhouse-client --user default --password "${CH_PASS}" \
+        --query "SELECT 1" 2>&1 || echo "failed")
+
+    if echo "${ch_test}" | grep -q "^1$"; then
+        info "ClickHouse 密码验证通过"
+        return 0
+    fi
+
+    # 登录失败: 用容器当前的旧密码登录, 然后 ALTER USER 同步到 CH_PASS
+    warn "ClickHouse 密码与 .env 不一致! 容器实际值末尾可能含脏字符, 尝试 ALTER USER 修复..."
+    local alter_result
+    alter_result=$(docker exec bbsmc-clickhouse \
+        clickhouse-client --user default --password "${container_ch_pass}" \
+        --query "ALTER USER default IDENTIFIED BY '${CH_PASS}'" 2>&1 || echo "failed")
+
+    if echo "${alter_result}" | grep -qi "error\|failed\|exception"; then
+        error "ClickHouse 密码修复失败!"
+        error "ALTER USER 输出: ${alter_result}"
+        error "请手动重置容器 (会丢失 ClickHouse 数据):"
+        error "  docker compose -f docker-compose.prod.yml down"
+        error "  rm -rf ${DATA_DIR:-/www/wwwroot/bbsmc-data}/clickhouse"
+        error "  bash deploy.sh"
+        return 1
+    fi
+
+    # 验证修复
+    ch_test=$(docker exec bbsmc-clickhouse \
+        clickhouse-client --user default --password "${CH_PASS}" \
+        --query "SELECT 1" 2>&1 || echo "failed")
+    if echo "${ch_test}" | grep -q "^1$"; then
+        info "ClickHouse 密码已修复, 验证通过"
+    else
+        error "ClickHouse 密码修复后仍无法连接!"
+        error "验证输出: ${ch_test}"
+        return 1
+    fi
 }
 
 # ---------------------- 重启 Docker 服务 ----------------------
@@ -4710,6 +4784,11 @@ main() {
             fix_nginx_configs
             exit 0
             ;;
+        fix-clickhouse|fix-ch)
+            # 修复 ClickHouse 密码 (与 .env 中 CH_PASS 不一致时)
+            fix_clickhouse_password
+            exit $?
+            ;;
         apply-ssl|ssl)
             # 应用 SSL 证书到 Nginx (检测已有证书或申请新证书)
             setup_ssl
@@ -4751,6 +4830,7 @@ main() {
             echo "  uninstall    卸载 (保留数据需 KEEP_DATA=1)"
             echo "  reconfigure  重新配置第三方服务 (OAuth/SMTP/支付)"
             echo "  fix-nginx    修复 Nginx 反代配置并启动"
+            echo "  fix-clickhouse 修复 ClickHouse 密码 (与 .env CH_PASS 同步)"
             echo "  apply-ssl    应用 SSL 证书到 Nginx (检测已有或申请新证书)"
             echo "  diagnose     系统诊断 (检查 Nginx/服务/端口/SSL 状态)"
             echo "  set-admin    设置管理员账户 (提升用户为 admin 角色)"
