@@ -2793,10 +2793,13 @@ server {
     resolver_timeout 5s;
 
     # ====== 本地路由: 用户/认证/上传相关 (所有方法都走本地) ======
-    location ~ ^/v[0-9]+/(auth|user|session|pat|oauth|notifications|report|thread|billing|payout|collections) {
-        # API 兼容性重写: 旧前端/第三方可能请求 /v2/auth/register 或 /v2/auth/create_account_with_password
-        #   后端实际路由为 /v2/auth/create (函数注解 #[post("create")])
-        rewrite ^/v[0-9]+/auth/(register|create_account_with_password)$ /v2/auth/create last;
+    # 匹配 v2/xxx 路径, 包括 _internal 前缀 (前端可能使用 v2/_internal/auth/xxx)
+    location ~ ^/v[0-9]+/(_internal|auth|user|session|pat|oauth|notifications|report|thread|billing|payout|collections) {
+        # API 兼容性重写:
+        #   v2/auth/register -> v2/auth/create_account_with_password (前端可能请求 register)
+        rewrite ^/v[0-9]+/auth/register$ /v2/auth/create_account_with_password break;
+        #   v2/_internal/auth/xxx -> v2/auth/xxx (去掉 _internal 前缀, 匹配后端路由)
+        rewrite ^/v[0-9]+/_internal/auth/(.*)$ /v2/auth/$1 break;
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
         proxy_set_header Host ${API_DOMAIN};
         proxy_set_header X-Real-IP \$remote_addr;
