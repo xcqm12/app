@@ -2822,6 +2822,21 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
+    # ====== 内部 API 路由 (健康检查/认证等, 所有方法都走本地) ======
+    # 后端注册了 _internal/auth/xxx, _internal/health, _internal/admin/xxx 等路由
+    # 注: v2/_internal/xxx 路径在 location ~ ^/v[0-9]+/(_internal|auth|...) 块中处理
+    location /_internal/ {
+        proxy_pass http://127.0.0.1:${BACKEND_PORT};
+        proxy_set_header Host ${API_DOMAIN};
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 600s;
+    }
+
     # ====== 通用路由: 根据请求方法分流 ======
     # POST/PUT/PATCH/DELETE -> 本地 labrinth (418 -> @local_labrinth)
     # GET/HEAD/OPTIONS -> modrinth 官网 (419 -> @modrinth_official)
