@@ -4024,8 +4024,11 @@ EOFCONF
     if [[ "${mirror_mode_active}" == "1" ]]; then
         info "应用镜像模式 Nginx 配置 (error_page+return 模式, 避免 builder error)..."
         # 从现有配置检测到的镜像模式, 强制设置 MIRROR_MODE
-        MIRROR_MODE=1
+        export MIRROR_MODE=1
         setup_modrinth_mirror
+        # setup_modrinth_mirror 会覆盖配置文件, 需要重新应用 SSL
+        info "重新应用 SSL 证书 (镜像模式覆盖了配置文件)..."
+        setup_ssl
     fi
 }
 
